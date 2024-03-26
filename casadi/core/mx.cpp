@@ -2090,6 +2090,14 @@ namespace casadi {
     return res;
   }
 
+  void MX::separate_linear(const MX &expr,
+      const MX &sym_lin, const MX &sym_const,
+      MX& expr_const, MX& expr_lin, MX& expr_nonlin) {
+        expr_const = MX::sym("x");
+        expr_lin = MX::sym("x");
+        expr_nonlin = MX::sym("x");
+  }
+
   MX MX::stop_diff(const MX& expr, casadi_int order) {
     std::vector<MX> s = symvar(expr);
     MX x = veccat(s);

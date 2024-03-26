@@ -546,6 +546,16 @@ namespace casadi {
   }
 
   template<>
+  void CASADI_EXPORT SX::separate_linear(const SX &expr,
+    const SX &sym_lin, const SX &sym_const,
+    SX& expr_const, SX& expr_lin, SX& expr_nonlin) {
+      expr_const = SX::sym("x");
+      expr_lin = SX::sym("x");
+      expr_nonlin = SX::sym("x");
+  }
+
+
+  template<>
   bool CASADI_EXPORT SX::depends_on(const SX &x, const SX &arg) {
     if (x.nnz()==0) return false;
 

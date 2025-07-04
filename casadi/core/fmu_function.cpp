@@ -27,6 +27,7 @@
 #include "casadi_misc.hpp"
 #include "serializing_stream.hpp"
 #include "dae_builder_internal.hpp"
+#include "filesystem_impl.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -47,6 +48,14 @@
 
 namespace casadi {
 
+void FmuFunction::check_mem_count(casadi_int n) const {
+  if (fmu_.can_be_instantiated_only_once_per_process() && n>1) {
+    casadi_error("FMU '" + fmu_.instance_name() + "' [" + fmu_.class_name() + "] "
+      "declares 'canBeInstantiatedOnlyOncePerProcess' to be true. "
+      "Regenerate your FMU with this option set to false.");
+  }
+}
+
 int FmuFunction::init_mem(void* mem) const {
   casadi_assert(mem != 0, "Memory is null");
   // Instantiate base classes
@@ -61,6 +70,8 @@ int FmuFunction::init_mem(void* mem) const {
     FmuMemory* m1 = i == 0 ? m : m->slaves.at(i - 1);
     if (fmu_.init_mem(m1)) return 1;
   }
+  // Make sure we can query stats, even before numerical evaluation
+  m->stats_available = true;
   return 0;
 }
 
@@ -120,22 +131,47 @@ FmuFunction::FmuFunction(const std::string& name, const Fmu& fmu,
       casadi_error("Cannot process output " + name_out[k] + ": " + std::string(e.what()));
     }
   }
+  // Which inputs and outputs exist
+  has_fwd_ = has_adj_ = has_jac_ = has_hess_ = false;
+  for (auto&& i : out_) {
+    switch (i.type) {
+    case OutputType::JAC:
+    case OutputType::JAC_TRANS:
+      has_jac_ = true;
+      break;
+    case OutputType::FWD:
+      has_fwd_ = true;
+      break;
+    case OutputType::ADJ:
+      has_adj_ = true;
+      break;
+    case OutputType::HESS:
+      has_adj_ = true;
+      has_hess_ = true;
+    default:
+      break;
+    }
+  }
   // Set input/output names
   name_in_ = name_in;
   name_out_ = name_out;
   // Default options
-  enable_ad_ = fmu.has_ad();
-  validate_ad_ = false;
+  uses_directional_derivatives_ = fmu.provides_directional_derivatives();
+  uses_adjoint_derivatives_ = fmu.provides_adjoint_derivatives();
+  validate_forward_ = false;
+  validate_hessian_ = false;
   validate_ad_file_ = "";
   make_symmetric_ = true;
-  check_hessian_ = false;
-  enable_fd_op_ = fmu.has_ad() && !all_regular();  // Use FD for second and higher order derivatives
+  nfwd_ = has_fwd_ ? 1 : 0;
+  nadj_ = has_adj_ ? 1 : 0;
+  // Use FD for second and higher order derivatives
+  enable_fd_op_ = fmu.provides_directional_derivatives() && !all_regular();
   step_ = 1e-6;
   abstol_ = 1e-3;
   reltol_ = 1e-3;
   print_progress_ = false;
   new_jacobian_ = true;
-  new_forward_ = false;
+  new_forward_ = true;
   new_hessian_ = true;
   hessian_coloring_ = true;
   parallelization_ = Parallelization::SERIAL;
@@ -175,16 +211,31 @@ const Options FmuFunction::options_
       "Auxilliary variables"}},
     {"enable_ad",
      {OT_BOOL,
-      "Calculate first order derivatives using FMU directional derivative support"}},
+      "[DEPRECATED] Renamed uses_directional_derivatives"}},
+    {"nfwd",
+     {OT_INT,
+      "Number of forward sensitivities to be calculated [1]"}},
+    {"nadj",
+     {OT_INT,
+      "Number of adjoint sensitivities to be calculated [1]"}},
+    {"uses_directional_derivatives",
+     {OT_BOOL,
+      "Use the analytic forward directional derivative support in the FMU"}},
+    {"validate_forward",
+     {OT_BOOL,
+      "Compare forward derivatives with finite differences for validation"}},
+    {"validate_hessian",
+     {OT_BOOL,
+      "Validate entries of the Hessian for self-consistency"}},
     {"validate_ad",
      {OT_BOOL,
-      "Compare analytic derivatives with finite differences for validation"}},
+      "[DEPRECATED] Renamed 'validate_forward'"}},
     {"validate_ad_file",
      {OT_STRING,
       "Redirect results of Hessian validation to a file instead of generating a warning"}},
     {"check_hessian",
      {OT_BOOL,
-      "Symmetry check for Hessian"}},
+      "[DEPRECATED] Renamed 'validate_hessian'"}},
     {"make_symmetric",
      {OT_BOOL,
       "Ensure Hessian is symmetric"}},
@@ -203,12 +254,15 @@ const Options FmuFunction::options_
     {"print_progress",
      {OT_BOOL,
       "Print progress during Jacobian/Hessian evaluation"}},
+    {"new_forward",
+     {OT_BOOL,
+      "Use forward AD implementation in class (conversion option, to be removed)"}},
     {"new_jacobian",
      {OT_BOOL,
-      "Use Jacobian implementation in class"}},
+      "Use Jacobian implementation in class (conversion option, to be removed)"}},
     {"new_hessian",
      {OT_BOOL,
-      "Use Hessian implementation in class"}},
+      "Use Hessian implementation in class (conversion option, to be removed)"}},
     {"hessian_coloring",
      {OT_BOOL,
       "Enable the use of graph coloring (star coloring) for Hessian calculation. "
@@ -220,13 +274,28 @@ void FmuFunction::init(const Dict& opts) {
   // Read options
   for (auto&& op : opts) {
     if (op.first=="enable_ad") {
-      enable_ad_ = op.second;
+      casadi_warning("Option 'enable_ad' has been renamed 'uses_directional_derivatives'");
+      uses_directional_derivatives_ = op.second;
+    } else if (op.first=="uses_directional_derivatives") {
+      uses_directional_derivatives_ = op.second;
+    } else if (op.first=="nfwd") {
+      nfwd_ = op.second;
+    } else if (op.first=="nadj") {
+      nadj_ = op.second;
+    } else if (op.first=="uses_adjoint_derivatives") {
+      uses_adjoint_derivatives_ = op.second;
+    } else if (op.first=="validate_forward") {
+      validate_forward_ = op.second;
+    } else if (op.first=="validate_hessian") {
+      validate_hessian_ = op.second;
     } else if (op.first=="validate_ad") {
-      validate_ad_ = op.second;
+      casadi_warning("Option 'validate_ad' has been renamed 'validate_forward'");
+      validate_forward_ = op.second;
+    } else if (op.first=="check_hessian") {
+      casadi_warning("Option 'check_hessian' has been renamed 'validate_hessian'");
+      validate_hessian_ = op.second;
     } else if (op.first=="validate_ad_file") {
       validate_ad_file_ = op.second.to_string();
-    } else if (op.first=="check_hessian") {
-      check_hessian_ = op.second;
     } else if (op.first=="make_symmetric") {
       make_symmetric_ = op.second;
     } else if (op.first=="step") {
@@ -239,6 +308,8 @@ void FmuFunction::init(const Dict& opts) {
       parallelization_ = to_enum<Parallelization>(op.second, "serial");
     } else if (op.first=="print_progress") {
       print_progress_ = op.second;
+    } else if (op.first=="new_forward") {
+      new_forward_ = op.second;
     } else if (op.first=="new_jacobian") {
       new_jacobian_ = op.second;
     } else if (op.first=="new_hessian") {
@@ -255,41 +326,18 @@ void FmuFunction::init(const Dict& opts) {
   fd_ = to_enum<FdMode>(fd_method_, "forward");
 
   // Consistency checks
-  if (enable_ad_) casadi_assert(fmu_.has_ad(),
+  if (uses_directional_derivatives_) casadi_assert(fmu_.provides_directional_derivatives(),
     "FMU does not provide support for analytic derivatives");
-  if (validate_ad_ && !enable_ad_) casadi_error("Inconsistent options");
+  if (validate_forward_ && !uses_directional_derivatives_) casadi_error("Inconsistent options");
+  if (uses_adjoint_derivatives_) casadi_assert(fmu_.provides_adjoint_derivatives(),
+    "FMU does not provide support for adjoint derivatives");
 
   // New AD validation file, if any
   if (!validate_ad_file_.empty()) {
     std::ofstream valfile;
-    valfile.open(validate_ad_file_);
+    Filesystem::open(valfile, validate_ad_file_);
     valfile << "Output Input Value Nominal Min Max AD FD Step Offset Stencil" << std::endl;
   }
-  // Which inputs and outputs exist
-  has_fwd_ = has_adj_ = has_jac_ = has_hess_ = false;
-  for (auto&& i : out_) {
-    switch (i.type) {
-    case OutputType::JAC:
-    case OutputType::JAC_TRANS:
-      has_jac_ = true;
-      break;
-    case OutputType::FWD:
-      has_fwd_ = true;
-      break;
-    case OutputType::ADJ:
-      has_adj_ = true;
-      break;
-    case OutputType::HESS:
-      has_adj_ = true;
-      has_hess_ = true;
-    default:
-      break;
-    }
-  }
-
-  // Forward derivatives only supported with analytic derivatives
-  if (has_fwd_ && !enable_ad_)
-    casadi_error("Analytic derivatives needed for forward directional derivatives");
 
   // Quick return if no Jacobian calculation
   if (!has_jac_ && !has_adj_ && !has_hess_) return;
@@ -408,6 +456,7 @@ void FmuFunction::init(const Dict& opts) {
       }
     }
   }
+  // NOTE(@jaeandersson): Make conditional !need_jac && uses_adjoint_derivatives_?
   for (auto&& i : in_) {
     if (i.type == InputType::ADJ) {
       // Get output indices
@@ -451,8 +500,8 @@ void FmuFunction::init(const Dict& opts) {
 
   // Work vectors for adjoint derivative calculation, shared between threads
   if (has_adj_) {
-    alloc_w(fmu_.n_out(), true);  // aseed
-    alloc_w(fmu_.n_in(), true);  // asens
+    alloc_w(nadj_ * fmu_.n_out(), true);  // aseed
+    alloc_w(nadj_ * fmu_.n_in(), true);  // asens
   }
 
   // If Hessian calculation is needed
@@ -702,9 +751,9 @@ Sparsity FmuFunction::get_sparsity_in(casadi_int i) {
     case InputType::REG:
       return Sparsity::dense(fmu_.ired(in_.at(i).ind).size(), 1);
     case InputType::FWD:
-      return Sparsity::dense(fmu_.ired(in_.at(i).ind).size(), 1);
+      return Sparsity::dense(fmu_.ired(in_.at(i).ind).size(), nfwd_);
     case InputType::ADJ:
-      return Sparsity::dense(fmu_.ored(in_.at(i).ind).size(), 1);
+      return Sparsity::dense(fmu_.ored(in_.at(i).ind).size(), nadj_);
     case InputType::OUT:
       return Sparsity(fmu_.ored(in_.at(i).ind).size(), 1);
     case InputType::ADJ_OUT:
@@ -719,9 +768,9 @@ Sparsity FmuFunction::get_sparsity_out(casadi_int i) {
     case OutputType::REG:
       return Sparsity::dense(fmu_.ored(s.ind).size(), 1);
     case OutputType::FWD:
-      return Sparsity::dense(fmu_.ored(s.ind).size(), 1);
+      return Sparsity::dense(fmu_.ored(s.ind).size(), nfwd_);
     case OutputType::ADJ:
-      return Sparsity::dense(fmu_.ired(s.wrt).size(), 1);
+      return Sparsity::dense(fmu_.ired(s.wrt).size(), nadj_);
     case OutputType::JAC:
       return fmu_.jac_sparsity(s.ind, s.wrt);
     case OutputType::JAC_TRANS:
@@ -786,6 +835,9 @@ int FmuFunction::eval(const double** arg, double** res, casadi_int* iw, double* 
   // Get memory struct
   FmuMemory* m = static_cast<FmuMemory*>(mem);
   casadi_assert(m != 0, "Memory is null");
+
+  setup(mem, arg, res, iw, w);
+
   // What blocks are there?
   bool need_jac = false, need_fwd = false, need_adj = false, need_hess = false;
   for (size_t k = 0; k < out_.size(); ++k) {
@@ -819,16 +871,20 @@ int FmuFunction::eval(const double** arg, double** res, casadi_int* iw, double* 
   }
   if (need_adj) {
     // Set up vectors
-    aseed = w; w += fmu_.n_out();
-    asens = w; w += fmu_.n_in();
+    aseed = w; w += nadj_ * fmu_.n_out();
+    asens = w; w += nadj_ * fmu_.n_in();
     // Clear seed/sensitivity vectors
-    std::fill(aseed, aseed + fmu_.n_out(), 0);
-    std::fill(asens, asens + fmu_.n_in(), 0);
+    std::fill(aseed, aseed + nadj_ * fmu_.n_out(), 0);
+    std::fill(asens, asens + nadj_ * fmu_.n_in(), 0);
     // Copy adjoint seeds to aseed
     for (size_t i = 0; i < in_.size(); ++i) {
       if (arg[i] && in_[i].type == InputType::ADJ) {
         const std::vector<size_t>& oind = fmu_.ored(in_[i].ind);
-        for (size_t k = 0; k < oind.size(); ++k) aseed[oind[k]] = arg[i][k];
+        for (casadi_int d = 0; d < nadj_; ++d) {
+          size_t aseed_off = d * fmu_.n_out();
+          size_t off = d * size1_in(i);
+          for (size_t k = 0; k < oind.size(); ++k) aseed[oind[k] + aseed_off] = arg[i][k + off];
+        }
       }
     }
   }
@@ -867,7 +923,7 @@ int FmuFunction::eval(const double** arg, double** res, casadi_int* iw, double* 
     if (eval_all(m, max_hess_tasks_, false, false, false, false, true)) return 1;
     // Post-process Hessian
     remove_nans(hess_nz, iw);
-    if (check_hessian_) check_hessian(m, hess_nz, iw);
+    if (validate_hessian_) check_hessian(m, hess_nz, iw);
     if (make_symmetric_) make_symmetric(hess_nz, iw);
   }
   // Fetch calculated blocks
@@ -887,7 +943,13 @@ int FmuFunction::eval(const double** arg, double** res, casadi_int* iw, double* 
         casadi_trans(w, sp_trans_[sp_trans_map_[k]], r, sparsity_out(k), iw);
         break;
       case OutputType::ADJ:
-        for (size_t id : fmu_.ired(out_[k].wrt)) *r++ = asens[id];
+        // If adjoint sensitivities have not already been set
+        if (need_jac || !uses_adjoint_derivatives_) {
+          for (casadi_int d = 0; d < nadj_; ++d) {
+            size_t asens_off = d * fmu_.n_in();
+            for (size_t id : fmu_.ired(out_[k].wrt)) *r++ = asens[id + asens_off];
+          }
+        }
         break;
       case OutputType::HESS:
         casadi_get_sub(r, hess_sp_, hess_nz,
@@ -925,7 +987,7 @@ int FmuFunction::eval_all(FmuMemory* m, casadi_int n_task,
       if (task < num_used_threads) {
         FmuMemory* s = task == 0 ? m : m->slaves.at(task - 1);
         flag = eval_task(s, task, num_used_threads, need_nondiff && task == 0,
-          need_jac, need_fwd && task == 0, need_adj, need_hess);
+          need_jac, need_fwd && task < nfwd_, need_adj, need_hess);
       } else {
         // Nothing to do for thread
         flag = 0;
@@ -945,7 +1007,7 @@ int FmuFunction::eval_all(FmuMemory* m, casadi_int n_task,
         [&, task](int* fl) {
           FmuMemory* s = task == 0 ? m : m->slaves.at(task - 1);
           *fl = eval_task(s, task, n_task, need_nondiff && task == 0,
-            need_jac, need_fwd && task == 0, need_adj, need_hess);
+            need_jac, need_fwd && task < nfwd_, need_adj, need_hess);
         }, &flag_task[task]);
     }
     // Join threads
@@ -988,29 +1050,38 @@ int FmuFunction::eval_task(FmuMemory* m, casadi_int task, casadi_int n_task,
   }
   // Forward derivatives
   if (need_fwd) {
-    // Pass all forward seeds
-    for (size_t k = 0; k < in_.size(); ++k) {
-      if (in_[k].type == InputType::FWD) {
-        fmu_.set_fwd(m, in_[k].ind, m->arg[k]);
+    // Selection of forward derivatives to be evaluated for the thread
+    casadi_int d_begin = (task * nfwd_) / n_task;
+    casadi_int d_end = ((task + 1) * nfwd_) / n_task;
+    // Loop over forward derivatives
+    for (casadi_int d = d_begin; d < d_end; ++d) {
+      // Print progress
+      if (print_progress_) print("Forward sensitivities, thread %d/%d: Direction %d/%d\n",
+        task + 1, n_task, d - d_begin + 1, d_end - d_begin);
+      // Pass all forward seeds
+      for (size_t k = 0; k < in_.size(); ++k) {
+        if (m->arg[k] && in_[k].type == InputType::FWD) {
+          fmu_.set_fwd(m, in_[k].ind, m->arg[k] + d * size1_in(k));
+        }
       }
-    }
-    // Request forward sensitivities
-    for (size_t k = 0; k < out_.size(); ++k) {
-      if (m->res[k] && out_[k].type == OutputType::FWD) {
-        fmu_.request_fwd(m, out_[k].ind);
+      // Request forward sensitivities
+      for (size_t k = 0; k < out_.size(); ++k) {
+        if (m->res[k] && out_[k].type == OutputType::FWD) {
+          fmu_.request_fwd(m, out_[k].ind);
+        }
       }
-    }
-    // Calculate derivatives
-   if (fmu_.eval_derivative(m, false)) return 1;
-    // Collect forward sensitivities
-    for (size_t k = 0; k < out_.size(); ++k) {
-      if (m->res[k] && out_[k].type == OutputType::FWD) {
-        fmu_.get_fwd(m, out_[k].ind, m->res[k]);
+      // Calculate derivatives
+      if (fmu_.eval_fwd(m, false)) return 1;
+      // Collect forward sensitivities
+      for (size_t k = 0; k < out_.size(); ++k) {
+        if (m->res[k] && out_[k].type == OutputType::FWD) {
+          fmu_.get_fwd(m, out_[k].ind, m->res[k] + d * size1_out(k));
+        }
       }
     }
   }
-  // Evalute extended Jacobian
-  if (need_jac || need_adj) {
+  // Evalute extended Jacobian and/or adjoint derivatives
+  if (need_jac || (need_adj && !uses_adjoint_derivatives_)) {
     // Selection of colors to be evaluated for the thread
     casadi_int c_begin = (task * jac_colors_.size2()) / n_task;
     casadi_int c_end = ((task + 1) * jac_colors_.size2()) / n_task;
@@ -1022,10 +1093,10 @@ int FmuFunction::eval_task(FmuMemory* m, casadi_int task, casadi_int n_task,
       // Get derivative directions
       casadi_jac_pre(&p_, &m->d, c);
       // Calculate derivatives
-      fmu_.set_seed(m, m->d.nseed, m->d.iseed, m->d.seed);
-      fmu_.request_sens(m, m->d.nsens, m->d.isens, m->d.wrt);
-      if (fmu_.eval_derivative(m, true)) return 1;
-      fmu_.get_sens(m, m->d.nsens, m->d.isens, m->d.sens);
+      fmu_.set_fwd(m, m->d.nseed, m->d.iseed, m->d.seed);
+      fmu_.request_fwd(m, m->d.nsens, m->d.isens, m->d.wrt);
+      if (fmu_.eval_fwd(m, true)) return 1;
+      fmu_.get_fwd(m, m->d.nsens, m->d.isens, m->d.sens);
       // Scale derivatives
       casadi_jac_scale(&p_, &m->d);
       // Collect Jacobian nonzeros
@@ -1036,8 +1107,44 @@ int FmuFunction::eval_task(FmuMemory* m, casadi_int task, casadi_int n_task,
       }
       // Propagate adjoint sensitivities
       if (need_adj) {
-        for (casadi_int i = 0; i < m->d.nsens; ++i)
-          m->asens[m->d.wrt[i]] += m->aseed[m->d.isens[i]] * m->d.sens[i];
+        for (casadi_int d = 0; d < nadj_; ++d) {
+          size_t aseed_off = d * fmu_.n_out();
+          size_t asens_off = d * fmu_.n_in();
+          for (casadi_int i = 0; i < m->d.nsens; ++i) {
+            m->asens[m->d.wrt[i] + asens_off] += m->aseed[m->d.isens[i] + aseed_off]
+              * m->d.sens[i];
+          }
+        }
+      }
+    }
+  } else if (need_adj) { // Adjoint derivatives, without forming the extended Jacobian
+    // Selection of forward derivatives to be evaluated for the thread
+    casadi_int d_begin = (task * nadj_) / n_task;
+    casadi_int d_end = ((task + 1) * nadj_) / n_task;
+    // Loop over forward derivatives
+    for (casadi_int d = d_begin; d < d_end; ++d) {
+      // Print progress
+      if (print_progress_) print("Adjoint sensitivities, thread %d/%d: Direction %d/%d\n",
+        task + 1, n_task, d - d_begin + 1, d_end - d_begin);
+      // Pass all adjoint seeds
+      for (size_t k = 0; k < in_.size(); ++k) {
+        if (m->arg[k] && in_[k].type == InputType::ADJ) {
+          fmu_.set_adj(m, in_[k].ind, m->arg[k] + d * size1_in(k));
+        }
+      }
+      // Request adjoint sensitivities
+      for (size_t k = 0; k < out_.size(); ++k) {
+        if (m->res[k] && out_[k].type == OutputType::ADJ) {
+          fmu_.request_adj(m, out_[k].wrt);
+        }
+      }
+      // Calculate derivatives
+      if (fmu_.eval_adj(m)) return 1;
+      // Collect adjoint sensitivities
+      for (size_t k = 0; k < out_.size(); ++k) {
+        if (m->res[k] && out_[k].type == OutputType::ADJ) {
+          fmu_.get_adj(m, out_[k].wrt, m->res[k] + d * size1_out(k));
+        }
       }
     }
   }
@@ -1088,13 +1195,13 @@ int FmuFunction::eval_task(FmuMemory* m, casadi_int task, casadi_int n_task,
         }
         // Perturb the input
         m->ibuf_.at(id) += h[v];
-        m->changed_.at(id) = true;
+        m->imarked_.at(id) = true;
         // Inverse of step size
         h[v] = 1. / h[v];
       }
       // Request all outputs
       for (size_t i : jac_out_) {
-        m->requested_.at(i) = true;
+        m->omarked_.at(i) = true;
         m->wrt_.at(i) = -1;
       }
       // Calculate perturbed inputs
@@ -1106,10 +1213,10 @@ int FmuFunction::eval_task(FmuMemory* m, casadi_int task, casadi_int n_task,
        // Get derivative directions
        casadi_jac_pre(&p_, &m->d, c1);
        // Calculate derivatives
-       fmu_.set_seed(m, m->d.nseed, m->d.iseed, m->d.seed);
-       fmu_.request_sens(m, m->d.nsens, m->d.isens, m->d.wrt);
-       if (fmu_.eval_derivative(m, true)) return 1;
-       fmu_.get_sens(m, m->d.nsens, m->d.isens, m->d.sens);
+       fmu_.set_fwd(m, m->d.nseed, m->d.iseed, m->d.seed);
+       fmu_.request_fwd(m, m->d.nsens, m->d.isens, m->d.wrt);
+       if (fmu_.eval_fwd(m, true)) return 1;
+       fmu_.get_fwd(m, m->d.nsens, m->d.isens, m->d.sens);
        // Scale derivatives
        casadi_jac_scale(&p_, &m->d);
        // Propagate adjoint sensitivities
@@ -1132,7 +1239,7 @@ int FmuFunction::eval_task(FmuMemory* m, casadi_int task, casadi_int n_task,
         casadi_int id = jac_in_.at(ind1);
         // Restore input
         m->ibuf_.at(id) = x[v];
-        m->changed_.at(id) = true;
+        m->imarked_.at(id) = true;
         // Get column in Hessian
         for (casadi_int k = hess_colind[ind1]; k < hess_colind[ind1 + 1]; ++k) {
           casadi_int id2 = jac_in_.at(hess_row[k]);
@@ -1287,8 +1394,14 @@ bool FmuFunction::all_vectors() const {
     switch (e.type) {
       // Supported for derivative calculations
       case InputType::REG:
-      case InputType::ADJ:
       case InputType::OUT:
+        break;
+      // Supported if one derivative
+      case InputType::FWD:
+        if (nfwd_ > 1) return false;
+        break;
+      case InputType::ADJ:
+        if (nadj_ > 1) return false;
         break;
       // Not supported
       default:
@@ -1366,10 +1479,8 @@ bool FmuFunction::has_forward(casadi_int nfwd) const {
   if (!new_forward_) return FunctionInternal::has_forward(nfwd);
   // Only first order analytic derivative possible
   if (!all_regular()) return false;
-  // FD to get forward directional derivatives not implemented
-  if (!enable_ad_) return false;
-  // Otherwise: Only 1 direction implemented
-  return nfwd == 1;
+  // Use analytic forward derivatives
+  return true;
 }
 
 Function FmuFunction::get_forward(casadi_int nfwd, const std::string& name,
@@ -1378,13 +1489,12 @@ Function FmuFunction::get_forward(casadi_int nfwd, const std::string& name,
     const Dict& opts) const {
   // Only implemented if "new_forward" is enabled
   if (!new_forward_) return FunctionInternal::get_forward(nfwd, name, inames, onames, opts);
-  // Only single directional derivative implemented
-  casadi_assert(nfwd == 1, "Not implemented");
-  // Hack: Inherit parallelization option
+  // Pass options
   Dict opts1 = opts;
   opts1["parallelization"] = to_string(parallelization_);
   opts1["verbose"] = verbose_;
   opts1["print_progress"] = print_progress_;
+  opts1["nfwd"] = nfwd;
   // Return new instance of class
   Function ret;
   ret.own(new FmuFunction(name, fmu_, inames, onames));
@@ -1395,22 +1505,21 @@ Function FmuFunction::get_forward(casadi_int nfwd, const std::string& name,
 bool FmuFunction::has_reverse(casadi_int nadj) const {
   // Only first order analytic derivative possible
   if (!all_regular()) return false;
-  // Otherwise: Only 1 direction implemented
-  return nadj == 1;
+  // Use analytic adjoint derivatives
+  return true;
 }
 
 Function FmuFunction::get_reverse(casadi_int nadj, const std::string& name,
     const std::vector<std::string>& inames,
     const std::vector<std::string>& onames,
     const Dict& opts) const {
-  // Only single directional derivative implemented
-  casadi_assert(nadj == 1, "Not implemented");
   // Hack: Inherit parallelization option
   Dict opts1 = opts;
   opts1["parallelization"] = to_string(parallelization_);
   opts1["verbose"] = verbose_;
   opts1["new_jacobian"] = new_hessian_;
   opts1["print_progress"] = print_progress_;
+  opts1["nadj"] = nadj;
   // Return new instance of class
   Function ret;
   ret.own(new FmuFunction(name, fmu_, inames, onames));
@@ -1471,7 +1580,7 @@ Dict FmuFunction::get_stats(void *mem) const {
 
 void FmuFunction::serialize_body(SerializingStream &s) const {
   FunctionInternal::serialize_body(s);
-  s.version("FmuFunction", 2);
+  s.version("FmuFunction", 3);
 
   s.pack("FmuFunction::Fmu", fmu_);
 
@@ -1501,10 +1610,11 @@ void FmuFunction::serialize_body(SerializingStream &s) const {
   s.pack("FmuFunction::has_adj", has_adj_);
   s.pack("FmuFunction::has_hess", has_hess_);
 
-  s.pack("FmuFunction::enable_ad", enable_ad_);
-  s.pack("FmuFunction::validate_ad", validate_ad_);
+  s.pack("FmuFunction::uses_directional_derivatives", uses_directional_derivatives_);
+  s.pack("FmuFunction::uses_adjoint_derivatives", uses_adjoint_derivatives_);
+  s.pack("FmuFunction::validate_forward", validate_forward_);
+  s.pack("FmuFunction::validate_hessian", validate_hessian_);
   s.pack("FmuFunction::make_symmetric", make_symmetric_);
-  s.pack("FmuFunction::check_hessian", check_hessian_);
   s.pack("FmuFunction::step", step_);
   s.pack("FmuFunction::abstol", abstol_);
   s.pack("FmuFunction::reltol", reltol_);
@@ -1533,7 +1643,7 @@ void FmuFunction::serialize_body(SerializingStream &s) const {
 }
 
 FmuFunction::FmuFunction(DeserializingStream& s) : FunctionInternal(s) {
-  int version = s.version("FmuFunction", 1, 2);
+  s.version("FmuFunction", 3);
 
   s.unpack("FmuFunction::Fmu", fmu_);
 
@@ -1569,16 +1679,17 @@ FmuFunction::FmuFunction(DeserializingStream& s) : FunctionInternal(s) {
   s.unpack("FmuFunction::has_adj", has_adj_);
   s.unpack("FmuFunction::has_hess", has_hess_);
 
-  s.unpack("FmuFunction::enable_ad", enable_ad_);
-  s.unpack("FmuFunction::validate_ad", validate_ad_);
+  s.unpack("FmuFunction::uses_directional_derivatives", uses_directional_derivatives_);
+  s.unpack("FmuFunction::uses_adjoint_derivatives", uses_adjoint_derivatives_);
+  s.unpack("FmuFunction::validate_forward", validate_forward_);
+  s.unpack("FmuFunction::validate_hessian", validate_hessian_);
   s.unpack("FmuFunction::make_symmetric", make_symmetric_);
-  s.unpack("FmuFunction::check_hessian", check_hessian_);
   s.unpack("FmuFunction::step", step_);
   s.unpack("FmuFunction::abstol", abstol_);
   s.unpack("FmuFunction::reltol", reltol_);
   s.unpack("FmuFunction::print_progress", print_progress_);
   s.unpack("FmuFunction::new_jacobian", new_jacobian_);
-  if (version >= 2) s.unpack("FmuFunction::new_forward", new_forward_);
+  s.unpack("FmuFunction::new_forward", new_forward_);
   s.unpack("FmuFunction::new_hessian", new_hessian_);
   s.unpack("FmuFunction::hessian_coloring", hessian_coloring_);
   s.unpack("FmuFunction::validate_ad_file", validate_ad_file_);

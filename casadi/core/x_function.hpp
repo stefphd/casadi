@@ -85,6 +85,10 @@ namespace casadi {
 
     /** \brief  Topological sorting of the nodes based on Depth-First Search (DFS)
 
+
+    This function modifies the temp member of the nodes,
+    making it not thread-safe.
+
         \identifier{xr} */
     static void sort_depth_first(std::stack<NodeType*>& s, std::vector<NodeType*>& nodes);
 
@@ -189,7 +193,7 @@ namespace casadi {
     virtual bool isInput(const std::vector<MatType>& arg) const;
 
     /** Inline calls? */
-    virtual bool should_inline(bool always_inline, bool never_inline) const = 0;
+    virtual bool should_inline(bool with_sx, bool always_inline, bool never_inline) const = 0;
 
     /** \brief Create call to (cached) derivative function, forward mode
 
@@ -332,6 +336,10 @@ namespace casadi {
                      "\nArgument " + str(i) + "(" + name_in_[i] + ") is not symbolic.");
       }
     }
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    std::lock_guard<std::mutex> lock(MatType::get_mutex_temp());
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
+
     // Check for duplicate entries among the input expressions
     bool has_duplicates = false;
     for (auto&& i : in_) {
@@ -1077,7 +1085,7 @@ namespace casadi {
                std::vector<std::vector<MatType> >& fsens,
                bool always_inline, bool never_inline) const {
     casadi_assert(!(always_inline && never_inline), "Inconsistent options");
-    if (!should_inline(always_inline, never_inline)) {
+    if (!should_inline(MatType::type_name()=="SX", always_inline, never_inline)) {
       // The non-inlining version is implemented in the base class
       return FunctionInternal::call_forward(arg, res, fseed, fsens,
                                             always_inline, never_inline);
@@ -1108,7 +1116,7 @@ namespace casadi {
                std::vector<std::vector<MatType> >& asens,
                bool always_inline, bool never_inline) const {
     casadi_assert(!(always_inline && never_inline), "Inconsistent options");
-    if (!should_inline(always_inline, never_inline)) {
+    if (!should_inline(MatType::type_name()=="SX", always_inline, never_inline)) {
       // The non-inlining version is implemented in the base class
       return FunctionInternal::call_reverse(arg, res, aseed, asens,
                                             always_inline, never_inline);

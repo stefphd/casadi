@@ -435,6 +435,7 @@ class MXtests(casadiTestCase):
 
     inp = DM([[1, 0, 2],[0, 0, 3],[4, 0, 0]])
     self.checkfunction(f,fsx,inputs=[inp])
+    self.check_codegen(f,inputs=[inp])
     y = fsx(inp)
     self.checkarray(y,DM([[1, 0, 2],[4, 0, 3]]))
     
@@ -1376,6 +1377,16 @@ class MXtests(casadiTestCase):
     f_out = f.call([])
 
     self.checkarray(f_out[0],r)
+    
+    cx = 3
+    cy = 4
+    for X in [DM,SX,MX]:
+        for nx in [2,1,0]:
+            for ny in [2,1,0]:
+                print(X,nx,ny)
+                r = diagcat(X(nx,ny),X.ones(cx,cy),X(nx,ny))
+                self.assertEqual(r.shape[0],cx+2*nx)
+                self.assertEqual(r.shape[1],cy+2*ny)
 
   def test_tril2symm(self):
     x = MX.sym("x",Sparsity.lower(3))
@@ -1685,6 +1696,7 @@ class MXtests(casadiTestCase):
             r = casadiop([x])
             f = Function("f", [xx],[r])
             rr = f(v)
+            print(r,rr,numpyop(x_))
             self.checkarray(rr,numpyop(x_))
 
             a = DM(f.sparsity_out(0),1)
@@ -1811,7 +1823,107 @@ class MXtests(casadiTestCase):
     F_out = F(4, 5)
 
     self.checkarray(F_out,9*DM.ones(4,4))
+    
+    z = vertcat(c,d,c+d)
+    
+    f = graph_substitute(z,[d],[D])
+    
+    F = Function("F", [x,y,b,D],[f])
+    F_ref = Function("F", [x,y,b,D],[vertcat(c,D,c+D)])
+    self.checkfunction_light(F,F_ref,inputs=[3,5,7,12])
 
+  def test_graph_substitute_function(self):
+    x=MX.sym("x")
+    y=MX.sym("y")
+
+
+        
+    f = Function("forig",[x,y],[x*y],{"never_inline":True})
+    g = Function("fsubs",[x,y],[x*y],{"never_inline":True})
+    
+    sx = sin(x)
+    y2 = 2*y
+    
+    a = f(sx,y2)
+    
+    x2 = x**2
+    
+    z = sqrt(x2*a)+a**2
+    print(z)
+    z2 = graph_substitute(z,[x2],[x])
+    print(z2)
+        
+    f = Function("forig",[x,y],[x*y,x-y,x+y],{"never_inline":True})
+    g = Function("fsubs",[x,y],[x*y,x-y,x+y],{"never_inline":True})
+    
+    sx = sin(x)
+    y2 = 2*y
+    
+    [a,b,c] = f(sx,y2)
+    
+    z = sqrt(a)+c**2
+    print(z)
+    z2 = graph_substitute(z,[],[])
+    print(z2)
+    
+    # Substitute a single output of a call
+    z2 = graph_substitute(z,[a],[g(sx,y2)[0]])
+    
+    print(z2)
+    self.assertTrue("fsubs" in str(z2))
+    self.assertTrue("forig" in str(z2))
+    
+    F_ref = Function("F_ref",[x,y],[z])
+    F = Function("F",[x,y],[z2])
+    
+    self.checkfunction_light(F,F_ref,inputs=[3.1,7.1])
+
+    # Substitute a single output of a call
+    z2 = graph_substitute(z2,[b],[np.nan])
+    self.assertTrue("fsubs" in str(z2))
+    self.assertTrue("forig" in str(z2))
+    
+    F_ref = Function("F_ref",[x,y],[z])
+    F = Function("F",[x,y],[z2])
+    
+    self.checkfunction_light(F,F_ref,inputs=[3.1,7.1])
+
+    # Substitute a single output of a call
+    z2 = graph_substitute(z2,[c],[g(sx,y2)[2]])
+    self.assertTrue("fsubs" in str(z2))
+    self.assertFalse("forig" in str(z2))
+    
+    F_ref = Function("F_ref",[x,y],[z])
+    F = Function("F",[x,y],[z2])
+    
+    self.checkfunction_light(F,F_ref,inputs=[3.1,7.1])
+    
+    # Substitute the entire Multi-output call
+    
+    z2 = graph_substitute(z,[a.dep(0)],[g(sx,y2)[0].dep(0)])
+    
+    self.assertTrue("fsubs" in str(z2))
+    self.assertFalse("forig" in str(z2))
+
+    F_ref = Function("F_ref",[x,y],[z])
+    F = Function("F",[x,y],[z2])
+    
+    self.checkfunction_light(F,F_ref,inputs=[3.1,7.1])
+    
+    
+  def test_graph_substitute_call(self):
+    x = MX.sym("x")
+    y = MX.sym("y")
+    z = MX.sym("z")
+
+    f = Function("f",[x,y,z],[x**2])
+
+    vertsplit
+
+    sx = sin(x)
+    res = graph_substitute([f(x+1,y,z),sin(f(x+1,y,z)),f(sx,y,z),sin(f(sx,y,z))],[sx],[cos(x)])
+    res = str(res)
+    self.assertEqual(res.count("{0}"),4)
 
   def test_matrix_expand(self):
     n = 2
@@ -2258,6 +2370,8 @@ class MXtests(casadiTestCase):
     f_in = [0]*f.n_in();f_in[0]=DM(list(range(1,5)))
 
     self.checkfunction(f,g,inputs=f_in)
+    self.check_codegen(f,inputs=f_in)
+    self.check_codegen(g,inputs=f_in)
 
   def test_reshape_sp(self):
     x = MX.sym("x",4,1)
@@ -2271,7 +2385,9 @@ class MXtests(casadiTestCase):
     f_in = [0]*f.n_in();f_in[0]=DM(list(range(1,5)))
 
     self.checkfunction(f,g,inputs=f_in)
-
+    self.check_codegen(f,inputs=f_in)
+    self.check_codegen(g,inputs=f_in)
+    
   def test_issue1041(self):
     x = MX.sym("x",2)
 
@@ -2422,6 +2538,7 @@ class MXtests(casadiTestCase):
         fr = Function("fr", [x],[op(fun(x),x)])
 
         self.checkfunction(f,fr,inputs=[0])
+        self.check_codegen(f,inputs=[0])
 
   @memory_heavy()
   def test_einstein(self):
@@ -2480,13 +2597,13 @@ class MXtests(casadiTestCase):
         def einstein_tests(dim_a, dim_b, dim_c, ind_a, ind_b, ind_c):
 
 
-          A = MX.sym("A", np.product(dim_a))
-          B = MX.sym("B", np.product(dim_b))
-          C = MX.sym("C", int(np.product(dim_c)),1)
+          A = MX.sym("A", np.prod(dim_a))
+          B = MX.sym("B", np.prod(dim_b))
+          C = MX.sym("C", int(np.prod(dim_c)),1)
 
-          A_sx = SX.sym("A", np.product(dim_a))
-          B_sx = SX.sym("B", np.product(dim_b))
-          C_sx = SX.sym("C", int(np.product(dim_c)),1)
+          A_sx = SX.sym("A", np.prod(dim_a))
+          B_sx = SX.sym("B", np.prod(dim_b))
+          C_sx = SX.sym("C", int(np.prod(dim_c)),1)
 
           np.random.seed(0)
 
@@ -2652,6 +2769,8 @@ class MXtests(casadiTestCase):
         fref = Function("f",[x,y],[bilin(x,y,y)])
         
         self.checkfunction(f,fref,inputs=[x0,y0])
+        self.check_codegen(f,inputs=[x0,y0])
+        self.check_codegen(fref,inputs=[x0,y0])
 
   def test_det_shape(self):
     X = MX.sym("x",2,3)
@@ -2673,6 +2792,7 @@ class MXtests(casadiTestCase):
     f = Function('f',[x],[det(x)])
     F = Function('F',[X],[det(X)])
     self.checkfunction(f,F,inputs=[x0])
+    self.check_codegen(F,inputs=[x0])
 
   def test_mtimes_mismatch_segfault(self):
     with self.assertInException("incompatible dimensions"):
@@ -2717,6 +2837,7 @@ class MXtests(casadiTestCase):
           e = dot(e,e)
           f = Function('f',[M],[e])
           self.checkfunction(f,f.expand(),inputs=[ numpy.random.random((S.nnz(),1))])
+          self.check_codegen(f,inputs=[ numpy.random.random((S.nnz(),1))],digits=13)
 
           mc = m+0
 
@@ -2729,6 +2850,7 @@ class MXtests(casadiTestCase):
           f = Function('f',[M,Y],[e])
           self.checkfunction(f,f.expand(),inputs=[ numpy.random.random((S.nnz(),1)), numpy.random.random((E.nnz(),1))])
           self.check_serialize(f,inputs=[ numpy.random.random((S.nnz(),1)), numpy.random.random((E.nnz(),1))])
+          self.check_codegen(f,inputs=[ numpy.random.random((S.nnz(),1)), numpy.random.random((E.nnz(),1))],digits=13)
 
   def test_evalf(self):
     x = MX.sym("x")
@@ -2810,6 +2932,7 @@ class MXtests(casadiTestCase):
       f.expand().jacobian().disp(True)
       print(J([2,2],0))
       self.checkfunction(f,f.expand(),inputs=[[2,2]])
+      self.check_codegen(f,inputs=[[2,2]],std="c99")
 
   def test_doc_expression_tools(self):
     self.assertTrue("Given a repeated matrix, computes the sum of repeated parts." in repsum.__doc__)
@@ -2898,6 +3021,37 @@ class MXtests(casadiTestCase):
       J = jacobian(z,q,opts)
       self.assertTrue(J.size()==(2,1))
       self.assertTrue(J.nnz()==2)
+
+  def test_print_instructions(self):
+    for X in [MX,SX]:
+        x = X.sym("x",Sparsity.diag(5))
+        y = X.sym("y",5,5)
+        z = X.sym("z",5)
+        w = X.sym("w")
+        g = Function('g',[z],[z[0]+z[2],z[1]+z[4]],{"never_inline":True})
+
+        [a,b] = g(mtimes(y+x,z))
+        f = Function('f',[x,y,z,w],[sin(a*(7*w)+6)*b],{"print_instructions": True, "print_canonical":True})
+        DM.rng(1)
+        inputs = [DM.rand(f.sparsity_in(i)) for i in range(f.n_in())]
+        with capture_stdout() as out:
+            f(*inputs)
+        out = out[0].split("\n")[:-1]
+        
+        self.assertTrue("inputs" in out[0])
+        
+        
+        if args.run_slow:
+            with self.assertInException("Parsing error"):
+                self.check_codegen(f,inputs,main=True)
+                        
+            with open("f_out.txt","r") as f_out:
+                out2 = f_out.read().split("\n")[:-2]
+            
+            
+            self.assertEqual(len(out),len(out2))
+            for a,b in zip(out,out2):
+                self.assertEqual(a,b)
 
   def test_low(self):
     v = MX.sym("v",5)
@@ -3043,6 +3197,7 @@ class MXtests(casadiTestCase):
     self.check_codegen(f,inputs=[vertcat(1.1,1.3,1.7)])
     self.checkfunction(f,f_ref,inputs=[vertcat(1.1,1.3,1.3)])
     self.checkfunction(f,f_ref,inputs=[vertcat(1.3,1.3,1.3)])
+    
 
     # Avoid overflow
     res = f(vertcat(100,1000,10000))
@@ -3085,6 +3240,7 @@ class MXtests(casadiTestCase):
 
     self.checkfunction(f,f.expand(),inputs=[DM([[1,2],[3,4]]),DM([[5,6],[7,8]])])
     self.checkfunction(f,f_alt,inputs=[DM([[1,2],[3,4]]),DM([[5,6],[7,8]])])
+    self.check_codegen(f,inputs=[DM([[1,2],[3,4]]),DM([[5,6],[7,8]])])
 
   def test_sparsity_cast_ad(self):
     #issue 3164
@@ -3096,6 +3252,7 @@ class MXtests(casadiTestCase):
     
     f = Function('f',[y],[w])
     self.checkfunction(f,f.expand(), inputs=[vertcat(1.1,1.3,1.7)])
+    self.check_codegen(f,inputs=[vertcat(1.1,1.3,1.7)])
 
 
   def test_fractional_slicing(self):
@@ -3115,6 +3272,677 @@ class MXtests(casadiTestCase):
     self.checkarray(f(1),DM([2,4]))
     self.checkarray(f(0.5),DM([1,3]))
     self.checkarray(f(0.9),DM([1,3]))
+    
+  def test_primitives(self):
+  
+    def experiments():
+        x = MX.sym("x",3)
+        y = MX.sym("y",3)
+        yield vertcat(x,y)
+        yield horzcat(x,y)
+        yield diagcat(x,y)
+        yield vertcat(x,y,MX(0,1))
+        yield vertcat(x,y).reshape((2,3))
+        yield sparsity_cast(vertcat(x,y), Sparsity.diag(6))
+        
+    for z in experiments():
+        print(z)
+        self.assertTrue(z.is_valid_input())
+        
+        print(z.primitives())
+        f = Function('f',[z],z.primitives())
+        DM.rng(1)
+        a = DM.rand(z.sparsity())
+        
+        ref = f(a)
+        res = z.split_primitives(a)
+        
+        self.assertEqual(len(ref),len(res))
+        for ea,eb in zip(ref,res):
+            self.checkarray(ea, eb)
+        
+        a_back = z.join_primitives(res)
+        self.checkarray(a,a_back)
+        
+        zsx = SX.sym("x",z.sparsity())
+        f2 = Function('f',[zsx],z.split_primitives(zsx))
+        
+        self.checkfunction_light(f,f2,inputs=[a])
+        self.check_codegen(f,inputs=[a])
+        self.check_codegen(f2,inputs=[a])
+        
+        f3 = Function('f',[zsx],[z.join_primitives(z.split_primitives(zsx))])
+        
+        res = f3(a)
+        self.checkarray(a,res)
+        
+        
+  def test_cache_output_node(self):
+    x = MX.sym("x")
+    y = MX.sym("y")
+    f = Function("f",[x,y],[x+y,x/y])
+    
+    [a,b] = f(sin(x),cos(y))
+    base = a.dep(0)
+    self.assertTrue(hash(a),hash(base.get_output(0)))
+    self.assertTrue(hash(b),hash(base.get_output(1)))
+    
+    
+  def test_naked_call_function(self):
+    x = MX.sym("x")
+    y = MX.sym("y")
+    f = Function("f",[x,y],[x+y,x/y])
+    
+    [a,b] = f(sin(x),cos(y))
+    
+    
 
+    base = a.dep(0)
+
+    with self.assertInException("get_output"):
+        g = Function("g",[x,y],[base])
+
+    with self.assertInException("get_output"):
+        3*base
+        
+  def test_substitute(self):
+    x = MX.sym("x")
+    y = MX.sym("y")
+    w = MX.sym("w")
+    
+
+    xy = x*y
+    
+    z = xy+w
+    z2 = substitute([z],[w],[3])[0]
+    print(xy)
+    print(z2.dep(1))
+    self.assertNotEqual(hash(xy),hash(z2.dep(1)))
+
+  def test_extract_parametric(self):
+    def test_equal(a,b):
+        if not isinstance(a,list) and not isinstance(a,tuple):
+          a = [a]
+        if not isinstance(b,list) and not isinstance(b,tuple):
+          b = [b]
+        f1 = Function('f',[x,y,p],a)
+        f2 = Function('f',[x,y,p],b)
+        DM.rng(1)
+        args = [DM.rand(f1.sparsity_in(i)) for i in range(f1.n_in())]
+        
+        for a,b in zip(f1.call(args,False,False),f2.call(args,False,False)):
+           if np.linalg.norm(a-b,1)>1e-12:
+              return False
+        return True
+
+        #return cse(a-b).is_zero()  
+    
+    for X in [SX,MX]:
+
+
+      x = X.sym("x")
+      y = X.sym("y")
+      p = X.sym("p")
+      
+      expr = 2*x*p+2*y*p**2
+      expr_ret,symbols,parametric = extract_parametric(expr,p, {"extract_trivial": True})
+      print(expr_ret,parametric)
+      self.assertTrue(test_equal(parametric,[p,p**2]))
+      
+      expr = vertcat(2*x+3*y+8*p,3*x+2*y+4,7)
+      
+      expr_ret,symbols,parametric = extract_parametric(expr,p, {"extract_trivial": True})
+      
+      print(expr_ret,parametric)
+      
+      self.assertTrue(test_equal(parametric[0],8*p))
+      
+      
+
+        
+    for X in [SX,MX]:
+
+
+      x = X.sym("x")
+      y = X.sym("y")
+      p = X.sym("p")
+
+      def tests():
+        cp = cos(p)
+        expr = (x-sqrt(p))*(y+cp**2)+cp/(x+cp)/(y-p)
+        
+        yield expr
+        
+        yield vertcat(expr,p**2)
+        
+      for expr in tests():
+
+        expr_ret,symbols,parametric = extract_parametric(expr,p, {"extract_trivial": True})
+        
+        print(expr_ret,symbols,parametric)
+        
+        self.assertFalse(depends_on(expr_ret,p))
+        
+        expr_recreated = substitute([expr_ret],symbols,parametric)[0]
+        self.assertTrue(test_equal(expr,expr_recreated))
+
+  def test_separate_linear(self):
+    for X in [SX,MX]:
+        x = X.sym("x")
+        y = X.sym("y")
+        p = X.sym("p")
+
+        z = 3*x+5*y+x*y+p*x+cos(p)
+
+
+        for expr, ref_const, ref_lin, ref_nonlin in [
+                    [x,0 , x, 0],
+                    [x+p, p, x, 0],
+                    [x+y, 0, x+y, 0],
+                    [x-p, -p, x, 0],
+                    [p-x, p, -x, 0],
+                    [2*x, 0, 2*x, 0],
+                    [-x, 0, -x, 0],  
+                    [3*x+y, 0, 3*x+y, 0],
+                    [cos(p),cos(p),0,0],
+                    [3*x+y+cos(p), cos(p), 3*x+y, 0],
+                    [3*x+7, 7, 3*x, 0],
+                    [p*(3*x+7), p*7, p*(3*x),0],
+                    [y*(3*x+7), 0, 7*y, y*(3*x)],
+                    [cos(7+3*x), 0, 0, cos(7+3*x)],
+                    [cos(3*x+7), 0, 0, cos(3*x+7)],
+                    [cos(7*p),cos(7*p),0,0],
+                    [cos(p+x),0,0,cos(p+x)],
+                    [x*cos(p)+7,7,x*cos(p),0],
+                    [y*(x*cos(p)+7),0,7*y,y*x*cos(p)],
+                    [p*(x+y+x*y), 0, p*(x+y), p*(x*y)],
+                    [cos(x+y+x*y), 0, 0, cos(x+y+x*y)],
+                    [p*(p+cos(p)*x), p**2, p*cos(p)*x, 0],
+                    [(p+x+x*y)*(cos(p)+7*x+3*x*y), p*cos(p), p*(7*x)+x*cos(p),p*(3*x*y)+x*y*(cos(p)+7*x+3*x*y)+7*x**2++3*x**2*y ],
+                    [(p+x+x*y)/cos(p), p/cos(p), x/cos(p), x*y/cos(p) ],
+                    [(p+x+x*y)/(cos(p)+7*x), 0,0,(p+x+x*y)/(cos(p)+7*x) ],
+                    [(p+x+x*y)/(cos(p)+7*x+3*x*y), 0,0,(p+x+x*y)/(cos(p)+7*x+3*x*y) ]  
+                    ]:
+
+            print("ref",expr,ref_const,ref_lin,ref_nonlin)
+            
+            [expr_const,expr_lin,expr_nonlin] = separate_linear(expr,vertcat(x,y),p)
+            print("actual",expr_const,expr_lin,expr_nonlin)
+            
+            
+            def test_equal(a,b):
+                f1 = Function('f',[x,y,p],[a])
+                f2 = Function('f',[x,y,p],[b])
+                DM.rng(1)
+                args = [DM.rand(f1.sparsity_in(i)) for i in range(f1.n_in())]
+                return abs(f1(*args)-f2(*args))<1e-12
+                
+                #return cse(a-b).is_zero() 
+
+            assert test_equal(expr,expr_const+expr_lin+expr_nonlin)
+
+            assert test_equal(expr_const,ref_const)
+            assert test_equal(expr_lin,ref_lin)
+            assert test_equal(expr_nonlin,ref_nonlin)
+            
+            
+            assert is_linear(expr_lin,vertcat(x,y))
+            assert not depends_on(expr_const,vertcat(x,y))
+            
+        x = X.sym("x",2)
+        y = X.sym("y",2)
+        p = X.sym("p",2)
+
+        for expr, ref_const, ref_lin, ref_nonlin in [
+                    [dot(p,x),0 , dot(p,x), 0],
+                    [dot(p+x+x*y,cos(p)+7*x+3*x*y), dot(p,cos(p)), dot(p,7*x)+dot(x,cos(p)), dot(p,3*x*y)+dot(x,7*x+3*x*y)+dot(x*y,cos(p)+7*x+3*x*y)]
+                    ]:
+
+            print("ref",expr,ref_const,ref_lin,ref_nonlin)
+            
+            [expr_const,expr_lin,expr_nonlin] = separate_linear(expr,vertcat(x,y),p)
+            print("actual",expr_const,expr_lin,expr_nonlin)
+            
+            
+            def test_equal(a,b):
+                f1 = Function('f',[x,y,p],[a])
+                f2 = Function('f',[x,y,p],[b])
+                DM.rng(1)
+                args = [DM.rand(f1.sparsity_in(i)) for i in range(f1.n_in())]
+                return abs(f1(*args)-f2(*args))<1e-12
+                
+                #return cse(a-b).is_zero() 
+
+            assert test_equal(expr,expr_const+expr_lin+expr_nonlin)
+
+            assert test_equal(expr_const,ref_const)
+            assert test_equal(expr_lin,ref_lin)
+            assert test_equal(expr_nonlin,ref_nonlin)
+
+
+            assert is_linear(expr_lin,vertcat(x,y))
+            assert not depends_on(expr_const,vertcat(x,y))
+
+        x = X.sym("x",2,2)
+        y = X.sym("y",2,2)
+        p = X.sym("p",2,2)
+
+        for expr, ref_const, ref_lin, ref_nonlin in [
+                    [(p+x+x*y).T,p.T,x.T,(x*y).T],
+                    [mtimes(p,x),0 , mtimes(p,x), 0],
+                    [mtimes(p+x+x*y,cos(p)+7*x+3*x*y), mtimes(p,cos(p)), mtimes(p,7*x)+mtimes(x,cos(p)), mtimes(p,3*x*y)+mtimes(x,7*x+3*x*y)+mtimes(x*y,cos(p)+7*x+3*x*y)]
+                    ]:
+
+            print("ref",expr,ref_const,ref_lin,ref_nonlin)
+            
+            [expr_const,expr_lin,expr_nonlin] = separate_linear(expr,veccat(x,y),p)
+            print("actual",expr_const,expr_lin,expr_nonlin)
+            
+            
+            def test_equal(a,b):
+                f1 = Function('f',[x,y,p],[a])
+                f2 = Function('f',[x,y,p],[b])
+                DM.rng(1)
+                args = [DM.rand(f1.sparsity_in(i)) for i in range(f1.n_in())]
+                return np.linalg.norm(f1(*args)-f2(*args),1)<1e-12
+                
+                #return cse(a-b).is_zero() 
+
+            assert test_equal(expr,expr_const+expr_lin+expr_nonlin)
+
+            assert test_equal(expr_const,ref_const)
+            assert test_equal(expr_lin,ref_lin)
+            assert test_equal(expr_nonlin,ref_nonlin)
+
+
+            assert is_linear(expr_lin,veccat(x,y))
+            assert not depends_on(expr_const,veccat(x,y))
+
+  def test_separate_linear_mat(self):
+
+        x = MX.sym("x",3)
+        y = MX.sym("y",3,3)
+        z = MX.sym("z",2)
+        p = MX.sym("p")
+        
+        A = DM([[0,1,3],[2,0,0],[0,9,0]])
+        Asp = sparsify(A)
+        
+
+        B = DM([[1.7,1.1],[6,0],[0,1.2]])
+        Bsp = sparsify(B)
+        [p1,p2] = vertsplit(9*vertcat(3,3*x,mtimes(y,x)),[0,2,7])
+        [p1c,p2c] = vertsplit(9*vertcat(3,DM.zeros(3,1),DM.zeros(3,1)),[0,2,7])
+        [p1l,p2l] = vertsplit(9*vertcat(0,3*x,DM.zeros(3,1)),[0,2,7])
+        [p1n,p2n] = vertsplit(9*vertcat(0,DM.zeros(3,1),mtimes(y,x)),[0,2,7])
+        E = (9*vertcat(3,3*x,mtimes(y,x))).nz[[2,3,0,4,6,6]]
+        Ec = (9*vertcat(3,DM.zeros(3,1),DM.zeros(3,1))).nz[[2,3,0,4,6,6]]
+        El = (9*vertcat(0,3*x,DM.zeros(3,1))).nz[[2,3,0,4,6,6]]
+        En = (9*vertcat(0,DM.zeros(3,1),mtimes(y,x))).nz[[2,3,0,4,6,6]]
+
+        
+        for expr, ref_const, ref_lin, ref_nonlin in [
+                    [mtimes(A,x)+mtimes(B,z),DM.zeros(3,1) , mtimes(A,x), mtimes(B,z)],
+                    [mtimes(Asp,x)+mtimes(Bsp,z),DM.zeros(3,1) , mtimes(Asp,x), mtimes(Bsp,z)],
+                    [vertcat(3*x+mtimes(y,x),9*z),DM.zeros(5,1),vertcat(3*x,DM.zeros(2,1)), vertcat(mtimes(y,x),9*z) ],
+                    [7*vertcat(3*x+mtimes(y,x),9*z),DM.zeros(5,1),7*vertcat(3*x,DM.zeros(2,1)), 7*vertcat(mtimes(y,x),9*z) ],
+                    [9*p2, 9*p2c, 9*p2l, 9*p2n],
+                    [E,Ec,El,En]
+                    ]:
+
+            print("separate_linear(", expr, ")")
+            print("ref")
+            print("  const",ref_const)
+            print("  lin",ref_lin)
+            print("  nonlin",ref_nonlin)
+            
+            [expr_const,expr_lin,expr_nonlin] = separate_linear(expr,[x,y],[p])
+            print("actual")
+            print("  const",expr_const)
+            print("  lin",expr_lin)
+            print("  nonlin",expr_nonlin)
+            
+            def test_equal(a,b):
+                f1 = Function('f',[x,y,z,p],[a])
+                f2 = Function('f',[x,y,z,p],[b])
+                DM.rng(1)
+                args = [DM.rand(f1.sparsity_in(i)) for i in range(f1.n_in())]
+                self.checkarray(f1(*args),f2(*args))
+
+            test_equal(expr,expr_const+expr_lin+expr_nonlin)
+
+            test_equal(expr_const,ref_const)
+            test_equal(expr_lin,ref_lin)
+            test_equal(expr_nonlin,ref_nonlin)
+            
+            
+            assert is_linear(expr_lin,veccat(x,y))
+            assert not depends_on(expr_const,veccat(x,y))
+            
+
+  def test_extract_parametric_opts(self):
+      for X in [SX,MX]:
+          x = X.sym("x")
+          y = X.sym("y")
+          p = X.sym("p")
+          
+          expr = 2*x*p+2*y*p**2
+          expr_ret,symbols,parametric = extract_parametric(expr,p, {"extract_trivial": True})
+          
+          self.assertEqual(len(symbols),2)
+          
+          self.assertEqual(symbols[0].name(),"e_0")
+          self.assertEqual(symbols[1].name(),"e_1")
+          
+          expr = 2*x*p+2*y*p**2
+          expr_ret,symbols,parametric = extract_parametric(expr,p, {"offset": 5, "prefix": "foo_", "suffix": "bar", "extract_trivial": True})
+          
+          self.assertEqual(symbols[0].name(),"foo_5bar")
+          self.assertEqual(symbols[1].name(),"foo_6bar")
+          
+          print(symbols)
+          print(parametric)
+          
+          
+          expr = 2*x*p+2*y*p**2
+          expr_ret,symbols,parametric = extract_parametric(expr,p, {"extract_trivial": False})
+          self.assertEqual(len(symbols),1)
+          self.assertTrue("sq(p)" in str(parametric))
+          print(parametric)
+      
+          expr = 2*x*p+2*y*p**2
+          expr_ret,symbols,parametric = extract_parametric(expr,p, {"extract_trivial": True})
+          self.assertEqual(len(symbols),2)
+          self.assertTrue("sq(p)" in str(parametric))
+          print(parametric)
+
+  def test_weakref(self):
+    x = MX.sym("x")
+    
+    y = WeakRef(x)
+    
+    self.assertTrue(y.alive())
+    
+    x = 0
+    
+    import gc
+    gc.collect()
+    
+    self.assertFalse(y.alive())
+    
+    
+    x = MX.sym("x")
+    y = WeakRef(x)
+    xx = y.shared()
+    xx = 0
+    
+    import gc
+    gc.collect()
+    
+    self.assertTrue(y.alive())
+    
+  def test_nonzeros(self):
+    
+    A = MX.sym("A",3,3)
+
+    x = MX.sym("x")
+    y = MX.sym("y")
+    z = MX.sym("z")
+    T = MX.sym("T",Sparsity.upper(3))
+    w = MX.sym("w",3,3)
+    
+    DM.rng(1)
+    
+    for expr in [
+        vertcat(x,y,z),
+        veccat(x,y,z,w),
+        veccat(x,T,z,w),
+        2*x,
+        4*T*x,
+        vertcat(x,vertcat(y,z))
+    ]:
+        fref = Function('fref',[x,y,z,w,A,T],[expr.nz[:]])
+        f = Function('f',[x,y,z,w,A,T],[vcat(expr.nonzeros())])
+        
+        self.checkfunction_light(f,fref,inputs=[DM.rand(f.sparsity_in(i)) for i in range(f.n_in())])
+
+    for expr in [
+        vertcat(x,y,z),
+        vertcat(x,vertcat(y,z))
+    ]:
+        s = str(expr.nonzeros())
+        self.assertTrue("[MX(x), MX(y), MX(z)]" in s)
+        
+  def test_printme_codegen(self):
+    for X in [SX,MX]:
+        x = X.sym("x")
+        
+        f = Function("f",[x],[(x**2).printme(2)+6])
+        self.check_codegen(f,inputs=[3])
+        
+  def test_norms(self):
+  
+    for f in [lambda x,X: vertcat(x[0],X(1,1),x[1:]),
+              lambda x,X: diag(x)
+                ]:
+        for norm in [norm_fro, norm_1, norm_inf]:
+            print("norm",norm)
+            x = SX.sym("x",5)
+            e = log(norm(f(sin(x),SX)))
+            fsx = Function('f',[x],[e])    
+            
+            x = MX.sym("x",5)
+            e = log(norm(f(sin(x),MX)))
+            fmx = Function('f',[x],[e])
+            for args in [vertcat(-0.3,0.3,0.21,0.17,0),vertcat(-1,-2,-7,-7,-7)]:
+                self.checkfunction(fsx,fmx,inputs=[args])
+            args = [vertcat(-0.3,0.3,0.21,0.17,0)]
+            self.check_codegen(fmx,inputs=args)
+      
+  def test_contains(self):
+    x = MX.sym("x",2,2)
+    y = MX.sym("y")
+    z = MX.sym("z",3,3)
+    
+    e = x*y
+    self.assertTrue(contains([x,y,z],x))
+    self.assertFalse(contains([x,y],z))
+    self.assertTrue(contains_any([x,y],[y,z]))
+    self.assertFalse(contains_all([x,y],[y,z]))
+    self.assertTrue(contains_any([x,y],[x,y]))
+    self.assertTrue(contains_all([x,y],[x,y]))
+    self.assertTrue(contains([e,x],e))
+   
+  def test_issue4041(self):
+    
+    x = MX.sym("x")
+    y = MX.sym("y")
+
+    f = Function('f',[x,y],[x**2],{"never_inline":True})
+
+    expr = f(x,y)
+    
+    self.assertFalse(depends_on(expr,y))
+    self.assertTrue(contains(symvar(expr),y))
+ 
+    f = Function('f',[x,y],[x**2],{"always_inline":True})
+
+    expr = f(x,y)
+    
+    self.assertFalse(depends_on(expr,y))
+    self.assertFalse(contains(symvar(expr),y))
+      
+  def test_symmetric_jacobian(self):
+    x = MX.sym('x', 4)
+    u = MX.sym('u', 2)
+
+    h = x[1]*5*x[2]
+
+    nh = 1
+    lam_h = MX.sym('lam_h', nh, 1)
+
+    adj_ux = densify(jtimes(h, vertcat(u, x), lam_h, True))
+    hess_ux = jacobian(adj_ux, vertcat(u, x), {'symmetric': True})
+    
+    adj_ux = jtimes(h, vertcat(u, x), lam_h, True)
+    with self.assertInException("Symmetry exploitation"):
+        hess_ux = jacobian(adj_ux, vertcat(u, x), {'symmetric': True})
+        
+        
+  def test_pow_zero(self):
+  
+    for X in [SX,MX]:
+
+        x = X.sym('x', Sparsity.diag(4))
+        self.assertTrue((x**0).is_dense())
+        self.assertFalse((x**0.3).is_dense())
+        self.assertFalse((x**1).is_dense())
+        self.assertFalse((x**2).is_dense())
+        self.assertFalse((x**2.3).is_dense())
+        self.assertTrue((x**(-2)).is_dense())
+        p = X.sym("p")
+        
+        self.assertTrue((x**p).is_dense())
+
+
+        x=X.sym("x")
+
+        self.checkarray(evalf(substitute(vertcat(x**2,x**1,x**0),x,0)),vertcat(0,0,1))
+        self.checkarray(evalf(substitute(x**DM([2,1,0]),x,0)),vertcat(0,0,1))
+
+  def test_pow(self):
+    x = MX.sym("x")
+    r = evalf(substitute(x**vertcat(2,1,0),x,0))
+    self.checkarray(r,vertcat(0,0,1))
+    
+    y = MX(4,1)
+    self.assertEqual((y**0).nnz(),4)
+    y = MX(4,1)
+    y[1] = x
+    self.assertEqual((y**0).nnz(),4)
+    y = MX(4,1)
+    y[1] = 0
+    self.assertEqual((y**0).nnz(),4)
+    y = MX(4,1)
+    y[1] = 1
+    self.assertEqual((y**0).nnz(),4)
+
+  def test_sum(self):
+    test_cases = [DM(4), horzcat(1,2),vertcat(1,2),blockcat([[1,2],[3,4]]),blockcat([[1,2,3],[3,4,5]]),blockcat([[1,2],[3,4],[6,9]])]
+    
+    for e in test_cases:
+        res = np.array(np.sum(e))
+        ref = np.sum(np.array(e))
+        self.checkarray(res,ref)
+        res = np.array(np.sum(e,0))
+        ref = np.sum(np.array(e),0)
+        self.checkarray(res,ref)
+        res = np.array(np.sum(e,1))
+        ref = np.sum(np.array(e),1)
+        self.checkarray(res,ref)
+        
+        with self.assertInException("axis 2 is out of bound"):
+            np.sum(e,2)
+
+  def test_jtimes_empty(self):
+  
+    with self.assertInException("Ambiguous"):
+        x = SX.sym("x",2,0)
+        y = jtimes(5,x,DM.ones(2,5))
+    with self.assertInException("Ambiguous"):
+        x = SX.sym("x",2,3)
+        y = jtimes(DM.ones(4,0),x,DM.ones(4,6),True)
+    
+    # non-transpose
+    for X in [SX,MX]:
+        for nx in [2,1,0]:
+            for mx in [3,1,0]:
+                x = X.sym("x",nx,mx)
+                for ny in [3,1,0]:
+                    for my in [4,1,0]:
+                        for bm in [1,3,0]:
+                            if bm!=1 and my==0: continue # ambiguous construction
+                            y = mtimes(mtimes(DM.rand(ny,nx), x),DM.rand(mx,my))
+                            assert y.shape==(ny,my)
+                            yb = DM.rand(ny,my*bm)
+                            
+                            r = jtimes(y,x,yb,True)
+                            r_ref = hcat(mtimes(jacobian(y,vec(x)).T,vec(e)).reshape(x.shape) for e in horzsplit(yb,max(1,my)))
+                            self.assertTrue(r.shape==(nx,mx*bm))
+                            f = Function('f',[x],[r])
+                            f_ref = Function('f',[x],[r_ref])
+                            self.checkfunction_light(f,f_ref,inputs=[DM.rand(nx,mx)])
+        for nx in [2,1,0]:
+            for mx in [3,1,0]:
+                x = X.sym("x",nx,mx)
+                for ny in [3,1,0]:
+                    for my in [4,1,0]:
+                        for bm in [1,3,0]:
+                            if bm!=1 and mx==0: continue # ambiguous construction
+                            y = mtimes(mtimes(DM.rand(ny,nx), x),DM.rand(mx,my))
+                            assert y.shape==(ny,my)
+                            dx = DM.rand(nx,mx*bm)
+
+                            r = jtimes(y,x,dx)
+                            r_ref = hcat(mtimes(jacobian(y,vec(x)),vec(e)).reshape(x.shape) for e in horzsplit(dx,max(1,ny)))
+                            
+                            self.assertTrue(r.shape==(ny,my*bm))
+                            f = Function('f',[x],[r])
+                            f_ref = Function('f',[x],[r_ref])
+                            self.checkfunction_light(f,f_ref,inputs=[DM.rand(nx,mx)])
+
+  def test_issue2934(self):
+    M = MX.sym("X",5,5)
+    Y = MX.sym("y",2,2)
+
+    args = [M,Y]
+
+    m = MX(M)
+
+
+    m[[0,0],[0,0]] = Y
+
+    print(m)
+    f = Function('f',[M,Y],[m])
+    print(f.call([M,Y],True,False)[0])
+    self.assertTrue("((2.*X)[-1, -1, -1, 0] = y)" in str(f.call([2*M,Y],True,False)[0]))
+
+  def test_issue2935(self):
+
+
+    M = MX(DM.rand(5,5))
+    S = M.sparsity()
+    m = M
+
+    Y = MX.sym("y",2,2)
+    E = Y.sparsity()
+    y = Y
+
+    m[[0,0],[0,0]] = y
+
+    e = cos(m)
+    e = dot(e,e)
+
+    eb = MX.sym("eb")
+    ge = jtimes(e,Y,eb,True)
+
+    f = Function('f',[eb,Y],[ge])
+
+    e1 = f.call([eb,Y],True,False)[0] # without eval_mx
+    e2 = f.call([eb,Y+1e-300],True,False)[0] # with eval_mx
+
+    print(e1)
+    print(e2)
+
+    f1 = Function('f1',[eb,Y],[ge])
+    f2 = Function('f2',[eb,Y],[e2])
+
+    args = [1,numpy.random.random(E.shape)]
+
+    print(f1(*args))
+    print(f2(*args))
+
+    assert f1(*args).sparsity()==f2(*args).sparsity()
+          
 if __name__ == '__main__':
     unittest.main()

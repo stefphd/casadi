@@ -141,6 +141,13 @@ namespace casadi {
                             "Option 'default_in' has incorrect length");
     }
 
+    // Check if naked MultiOutput nodes are present
+    for (const MX& e : out_) {
+      casadi_assert(!e->has_output(),
+        "Function output contains MultiOutput nodes. "
+        "You must use get_output() to make a concrete instance.");
+    }
+
     if (cse_opt) out_ = cse(out_);
 
     // Stack used to sort the computational graph
@@ -148,6 +155,9 @@ namespace casadi {
 
     // All nodes
     std::vector<MXNode*> nodes;
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    std::lock_guard<std::mutex> lock(MX::get_mutex_temp());
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
     // Add the list of nodes
     for (casadi_int ind=0; ind<out_.size(); ++ind) {
@@ -421,6 +431,7 @@ namespace casadi {
   int MXFunction::eval(const double** arg, double** res,
       casadi_int* iw, double* w, void* mem) const {
     if (verbose_) casadi_message(name_ + "::eval");
+    setup(mem, arg, res, iw, w);
     // Work vector and temporaries to hold pointers to operation input and outputs
     const double** arg1 = arg+n_in_;
     double** res1 = res+n_out_;
@@ -521,12 +532,44 @@ namespace casadi {
   }
 
   void MXFunction::print_arg(std::ostream &stream, casadi_int k, const AlgEl& el,
-      const double** arg) const {
+    const double** arg) const {
     stream << name_ << ":" << k << ": " << print(el) << " inputs:" << std::endl;
     for (size_t i = 0; i < el.arg.size(); ++i) {
-      stream << i << ": ";
-      DM::print_default(stream, el.data->dep(i).sparsity(), arg[i], true);
-      stream << std::endl;
+      if (arg[i]) {
+        stream << i << ": ";
+        if (print_canonical_) {
+          print_canonical(stream, el.data->dep(i).sparsity(), arg[i]);
+        } else {
+          DM::print_default(stream, el.data->dep(i).sparsity(), arg[i], true);
+        }
+        stream << std::endl;
+      }
+    }
+  }
+
+  void MXFunction::print_arg(CodeGenerator& g, casadi_int k, const AlgEl& el,
+    const std::vector<casadi_int>& arg, const std::vector<bool>& arg_is_ref) const {
+    g << g.printf(name_ + ":" + str(k) + ": " + print(el) + " inputs:\\n") << "\n";
+    for (size_t i = 0; i < el.arg.size(); ++i) {
+      if (arg[i]>=0) {
+        g << g.printf(str(i) + ": ");
+        std::string a = g.work(arg[i], el.data->dep(i).nnz(), arg_is_ref[i]);
+        g << g.print_canonical(el.data->dep(i).sparsity(), a);
+        g << g.printf("\\n") << "\n";
+      }
+    }
+  }
+
+  void MXFunction::print_res(CodeGenerator& g, casadi_int k, const AlgEl& el,
+    const std::vector<casadi_int>& res, const std::vector<bool>& res_is_ref) const {
+    g << g.printf(name_ + ":" + str(k) + ": " + print(el) + " outputs:\\n") << "\n";
+    for (size_t i = 0; i < el.res.size(); ++i) {
+      if (res[i]>=0) {
+        g << g.printf(str(i) + ": ");
+        std::string a = g.work(res[i], el.data->sparsity(i).nnz(), res_is_ref[i]);
+        g << g.print_canonical(el.data->sparsity(i), a);
+        g << g.printf("\\n") << "\n";
+      }
     }
   }
 
@@ -534,9 +577,15 @@ namespace casadi {
       double** res) const {
     stream << name_ << ":" << k << ": " << print(el) << " outputs:" << std::endl;
     for (size_t i = 0; i < el.res.size(); ++i) {
-      stream << i << ": ";
-      DM::print_default(stream, el.data->sparsity(i), res[i], true);
-      stream << std::endl;
+      if (res[i]) {
+        stream << i << ": ";
+        if (print_canonical_) {
+          print_canonical(stream, el.data->sparsity(i), res[i]);
+        } else {
+          DM::print_default(stream, el.data->sparsity(i), res[i], true);
+        }
+        stream << std::endl;
+      }
     }
   }
 
@@ -676,7 +725,7 @@ namespace casadi {
       }
 
       // non-inlining call is implemented in the base-class
-      if (!should_inline(always_inline, never_inline)) {
+      if (!should_inline(false, always_inline, never_inline)) {
         return FunctionInternal::eval_mx(arg, res, false, true);
       }
 
@@ -1103,7 +1152,16 @@ namespace casadi {
   }
 
   int MXFunction::eval_sx(const SXElem** arg, SXElem** res,
-      casadi_int* iw, SXElem* w, void* mem) const {
+      casadi_int* iw, SXElem* w, void* mem,
+      bool always_inline, bool never_inline) const {
+    always_inline = always_inline || always_inline_;
+    never_inline = never_inline || never_inline_;
+
+    // non-inlining call is implemented in the base-class
+    if (!should_inline(true, always_inline, never_inline)) {
+      return FunctionInternal::eval_sx(arg, res, iw, w, mem, false, true);
+    }
+
     // Work vector and temporaries to hold pointers to operation input and outputs
     std::vector<const SXElem*> argp(sz_arg());
     std::vector<SXElem*> resp(sz_res());
@@ -1178,31 +1236,7 @@ namespace casadi {
     g.init_local("arg1", "arg+" + str(n_in_));
     g.init_local("res1", "res+" + str(n_out_));
 
-    // Declare scalar work vector elements as local variables
-    bool first = true;
-    for (casadi_int i=0; i<workloc_.size()-1; ++i) {
-      casadi_int n=workloc_[i+1]-workloc_[i];
-      if (n==0) continue;
-      if (first) {
-        g << "casadi_real ";
-        first = false;
-      } else {
-        g << ", ";
-      }
-      /* Could use local variables for small work vector elements here, e.g.:
-         ...
-         } else if (n<10) {
-         g << "w" << i << "[" << n << "]";
-         } else {
-         ...
-      */
-      if (!g.codegen_scalars && n==1) {
-        g << "w" << i;
-      } else {
-        g << "*w" << i << "=w+" << workloc_[i];
-      }
-    }
-    if (!first) g << ";\n";
+    g.reserve_work(workloc_.size()-1);
 
     // Operation number (for printing)
     casadi_int k=0;
@@ -1210,21 +1244,34 @@ namespace casadi {
     // Names of operation argument and results
     std::vector<casadi_int> arg, res;
 
+    // State of work vector: reference or not (value types)
+    std::vector<bool> work_is_ref(workloc_.size()-1, false);
+
+    // State of operation arguments and results: reference or not
+    std::vector<bool> arg_is_ref, res_is_ref;
+
+    // Collect for each work vector element if reference or value needed
+    std::vector<bool> needs_reference(workloc_.size()-1, false);
+    std::vector<bool> needs_value(workloc_.size()-1, false);
+
     // Codegen the algorithm
     for (auto&& e : algorithm_) {
       // Generate comment
       if (g.verbose) {
-        g << "/* #" << k++ << ": " << print(e) << " */\n";
+        g << "/* #" << k << ": " << print(e) << " */\n";
       }
 
       // Get the names of the operation arguments
       arg.resize(e.arg.size());
+      arg_is_ref.resize(e.arg.size());
       for (casadi_int i=0; i<e.arg.size(); ++i) {
         casadi_int j=e.arg.at(i);
         if (j>=0 && workloc_.at(j)!=workloc_.at(j+1)) {
           arg.at(i) = j;
+          arg_is_ref.at(i) = work_is_ref.at(j);
         } else {
           arg.at(i) = -1;
+          arg_is_ref.at(i) = false;
         }
       }
 
@@ -1239,8 +1286,59 @@ namespace casadi {
         }
       }
 
+      res_is_ref.resize(e.res.size());
+      // By default, don't assume references
+      std::fill(res_is_ref.begin(), res_is_ref.end(), false);
+
+      if (print_instructions_ && e.op!=OP_INPUT && e.op!=OP_OUTPUT) {
+        print_arg(g, k, e, arg, arg_is_ref);
+      }
+
       // Generate operation
-      e.data->generate(g, arg, res);
+      e.data->generate(g, arg, res, arg_is_ref, res_is_ref);
+
+      for (casadi_int i=0; i<e.res.size(); ++i) {
+        casadi_int j=e.res.at(i);
+        if (j>=0 && workloc_.at(j)!=workloc_.at(j+1)) {
+          work_is_ref.at(j) = res_is_ref.at(i);
+          if (res_is_ref.at(i)) {
+            needs_reference[j] = true;
+          } else {
+            needs_value[j] = true;
+          }
+        }
+      }
+
+      if (print_instructions_ && e.op!=OP_INPUT && e.op!=OP_OUTPUT) {
+        print_res(g, k, e, res, res_is_ref);
+      }
+
+      k++;
+
+    }
+
+    // Declare scalar work vector elements as local variables
+    for (casadi_int i=0; i<workloc_.size()-1; ++i) {
+      casadi_int n=workloc_[i+1]-workloc_[i];
+      if (n==0) continue;
+      /* Could use local variables for small work vector elements here, e.g.:
+         ...
+         } else if (n<10) {
+         g << "w" << i << "[" << n << "]";
+         } else {
+         ...
+      */
+      if (!g.codegen_scalars && n==1) {
+        g.local("w" + g.format_padded(i), "casadi_real");
+      } else {
+        if (needs_value[i]) {
+          g.local("w" + g.format_padded(i), "casadi_real", "*");
+          g.init_local("w" + g.format_padded(i), "w+" + str(workloc_[i]));
+        }
+        if (needs_reference[i]) {
+          g.local("wr" + g.format_padded(i), "const casadi_real", "*");
+        }
+      }
     }
   }
 
@@ -1310,7 +1408,7 @@ namespace casadi {
 
             // Perform the operation
             res1.resize(e.res.size());
-            e.data.eval_mx(arg1, res1);
+            e.data->eval_mx(arg1, res1);
 
             // Get the result
             for (casadi_int i=0; i<res1.size(); ++i) {
@@ -1405,7 +1503,7 @@ namespace casadi {
     }
   }
 
-  bool MXFunction::should_inline(bool always_inline, bool never_inline) const {
+  bool MXFunction::should_inline(bool with_sx, bool always_inline, bool never_inline) const {
     // If inlining has been specified
     casadi_assert(!(always_inline && never_inline),
       "Inconsistent options for " + definition());
@@ -1415,8 +1513,8 @@ namespace casadi {
     if (never_inline) return false;
     // Functions with free variables must be inlined
     if (has_free()) return true;
-    // No inlining by default
-    return false;
+    // Default inlining only when called with sx
+    return with_sx;
   }
 
   void MXFunction::export_code_body(const std::string& lang,
@@ -1814,6 +1912,40 @@ namespace casadi {
       // Option not found - continue to base classes
       XFunction<MXFunction, MX, MXNode>::change_option(option_name, option_value);
     }
+  }
+
+  std::vector<MX> MXFunction::order(const std::vector<MX>& expr) {
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    std::lock_guard<std::mutex> lock(MX::get_mutex_temp());
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
+    // Stack used to sort the computational graph
+    std::stack<MXNode*> s;
+
+    // All nodes
+    std::vector<MXNode*> nodes;
+
+    // Add the list of nodes
+    for (casadi_int ind=0; ind<expr.size(); ++ind) {
+      // Loop over primitives of each output
+      std::vector<MX> prim = expr[ind].primitives();
+      for (casadi_int p=0; p<prim.size(); ++p) {
+        // Get the nodes using a depth first search
+        s.push(prim[p].get());
+        XFunction<MXFunction, MX, MXNode>::sort_depth_first(s, nodes);
+      }
+    }
+
+    // Clear temporary markers
+    for (casadi_int i=0; i<nodes.size(); ++i) {
+      nodes[i]->temp = 0;
+    }
+
+    std::vector<MX> ret(nodes.size());
+    for (casadi_int i=0; i<nodes.size(); ++i) {
+      ret[i].own(nodes[i]);
+    }
+
+    return ret;
   }
 
 } // namespace casadi

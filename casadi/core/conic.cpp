@@ -25,6 +25,7 @@
 
 #include "conic_impl.hpp"
 #include "nlpsol_impl.hpp"
+#include "filesystem_impl.hpp"
 
 namespace casadi {
 
@@ -47,7 +48,7 @@ namespace casadi {
 
   void conic_debug(const Function& f, const std::string &filename) {
     std::ofstream file;
-    file.open(filename.c_str());
+    Filesystem::open(file, filename);
     conic_debug(f, file);
   }
 
@@ -116,15 +117,14 @@ namespace casadi {
     //                      h(x) >=0 (psd)
 
     // Extract 'expand' option
-    Dict opt = opts;
-    auto it = opt.find("expand");
     bool expand = false;
+    Dict opt = opts;
+    extract_from_dict_inplace(opt, "expand", expand);
+    bool postpone_expand = false;
+    extract_from_dict_inplace(opt, "postpone_expand", postpone_expand);
     bool error_on_fail = get_from_dict(opts, "error_on_fail", true);
-    if (it!=opt.end()) {
-      expand = it->second;
-      opt.erase(it);
-    }
-    if (expand && M::type_name()=="MX") {
+
+    if (expand && !postpone_expand && M::type_name()=="MX") {
       Function f = Function("f", qp, {"x", "p"}, {"f", "g", "h"});
       std::vector<SX> arg = f.sx_in();
       std::vector<SX> res = f(arg);
@@ -194,7 +194,9 @@ namespace casadi {
     M Q = M::jacobian(h, x);
 
     // Create a function for calculating the required matrices vectors
-    Function prob(name + "_qp", {x, p}, {H, c, A, b, Q, P});
+    Function prob(name + "_qp", {x, p}, {H, c, A, b, Q, P},
+      {"x", "p"}, {"H", "c", "A", "b", "Q", "P"});
+    if (expand && postpone_expand) prob = prob.expand();
 
     // Make sure that the problem is sound
     casadi_assert(!prob.has_free(), "Cannot create '" + prob.name() + "' "
@@ -395,6 +397,12 @@ namespace casadi {
      {{"discrete",
        {OT_BOOLVECTOR,
         "Indicates which of the variables are discrete, i.e. integer-valued"}},
+      {"equality",
+       {OT_BOOLVECTOR,
+        "Indicate an upfront hint which of the constraints are equalities. "
+        "Some solvers may be able to exploit this knowledge. "
+        "When true, the corresponding lower and upper bounds are assumed equal. "
+        "When false, the corresponding bounds may be equal or different."}},
       {"print_problem",
        {OT_BOOL,
         "Print a numeric description of the problem"}}
@@ -411,6 +419,8 @@ namespace casadi {
     for (auto&& op : opts) {
       if (op.first=="discrete") {
         discrete_ = op.second;
+      } else if (op.first=="equality") {
+        equality_ = op.second;
       } else if (op.first=="print_problem") {
         print_problem_ = op.second;
       }
@@ -423,6 +433,12 @@ namespace casadi {
         casadi_assert(integer_support(),
                               "Discrete variables require a solver with integer support");
       }
+    }
+
+    if (!equality_.empty()) {
+      casadi_assert(equality_.size()==na_, "\"equality\" option has wrong length. "
+                                           "Expected " + str(na_) + " elements, but got " +
+                                            str(equality_.size()) + " instead.");
     }
 
     casadi_assert(np_==0 || psd_support(),
@@ -493,6 +509,10 @@ namespace casadi {
 
   std::map<std::string, Conic::Plugin> Conic::solvers_;
 
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+  std::mutex Conic::mutex_solvers_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
+
   const std::string Conic::infix_ = "conic";
 
   double Conic::get_default_in(casadi_int ind) const {
@@ -532,6 +552,8 @@ namespace casadi {
     setup(mem, arg, res, iw, w);
 
     int ret = solve(arg, res, iw, w, mem);
+
+    if (m->d_qp.success) m->d_qp.unified_return_status = SOLVER_RET_SUCCESS;
 
     if (error_on_fail_ && !m->d_qp.success)
       casadi_error("conic process failed. "
@@ -716,8 +738,9 @@ namespace casadi {
   void Conic::serialize_body(SerializingStream &s) const {
     FunctionInternal::serialize_body(s);
 
-    s.version("Conic", 2);
+    s.version("Conic", 3);
     s.pack("Conic::discrete", discrete_);
+    s.pack("Conic::equality", equality_);
     s.pack("Conic::print_problem", print_problem_);
     s.pack("Conic::H", H_);
     s.pack("Conic::A", A_);
@@ -738,8 +761,11 @@ namespace casadi {
   }
 
   Conic::Conic(DeserializingStream & s) : FunctionInternal(s) {
-    int version = s.version("Conic", 1, 2);
+    int version = s.version("Conic", 1, 3);
     s.unpack("Conic::discrete", discrete_);
+    if (version>=3) {
+      s.unpack("Conic::equality", equality_);
+    }
     s.unpack("Conic::print_problem", print_problem_);
     if (version==1) {
       s.unpack("Conic::error_on_fail", error_on_fail_);

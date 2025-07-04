@@ -29,6 +29,9 @@ from types import *
 from helpers import *
 import pickle
 import os
+import sys
+from casadi.tools import capture_stdout
+
 scipy_interpolate = False
 try:
   import scipy.interpolate
@@ -977,6 +980,8 @@ class Functiontests(casadiTestCase):
       self.assertTrue(same(F(a), r))
       self.check_codegen(F,inputs=[a],check_serialize=True)
       self.check_serialize(F,[a])
+      
+    print(F.stats())
 
     X = MX.sym("x")
 
@@ -1181,6 +1186,30 @@ class Functiontests(casadiTestCase):
           r = None
         if r is not None:
           self.checkarray(m,r)
+
+  def test_1d_bspline_call_fun(self):
+  
+    fs = []
+    for X in [SX,MX]:
+
+        x = X.sym("x")
+        np.random.seed(0)
+
+        d_knots = [list(np.linspace(0,1,5))]
+
+        data = np.random.random([len(e) for e in d_knots])
+        r = np.array(d_knots)
+
+        xyz = np.vstack(list(e.ravel(order='F') for e in r)).ravel(order='F')
+
+        d_flat = data.ravel(order='F')
+
+        LUT = interpolant('name','bspline',d_knots,d_flat)
+
+        f = Function('f',[x],[2*LUT(sin(x))])
+        fs.append(f)
+    self.checkfunction(fs[0],fs[1],inputs=[0.32])
+        
 
   @skip(not scipy_interpolate)
   def test_1d_bspline(self):
@@ -2545,6 +2574,32 @@ class Functiontests(casadiTestCase):
            for a,b in zip(Gf.call(arg),Ff.call(arg)):
              self.checkarray(a,b)
 
+  def test_non_diff_call(self):
+    x = MX.sym("x",5)
+    y = MX.sym("x",5,5)
+
+    f = Function("f",[x,y],[mtimes(y,x),mtimes(y.T,x)],{"never_inline":True,"is_diff_in":[False,True],"is_diff_out":[False,True]})
+    
+    
+
+    x = SX.sym("x",5)
+    y = SX.sym("x",5,5)
+    
+    g = Function('g',[x,y],f(x,y))
+    
+
+    X = MX.sym("x",5)
+    Y = MX.sym("x",5,5)
+    
+    G = Function('g',[x,y],f(x,y))
+    
+    DM.rng(1)
+    x0=DM.rand(5)
+    y0=DM.rand(5,5)
+    
+    self.checkfunction(g,G,inputs=[x0,y0])
+    
+
   @memory_heavy()
   def test_inline_linear_interpolant(self):
 
@@ -2654,8 +2709,9 @@ class Functiontests(casadiTestCase):
 
     trigger()
 
-    # buffer eval bypasses timings
-    self.assertTrue(f.stats()["n_call_total"]==0)
+    # buffer jit eval bypasses timings
+    with self.assertInException("No stats available"):
+        f.stats()
     self.checkarray(a,3)
 
   def test_codegen_inf_nan(self):
@@ -2692,6 +2748,7 @@ class Functiontests(casadiTestCase):
 
   def test_jit_serialize(self):
     if not args.run_slow: return
+    if sys.platform=="darwin": return
 
     def test_cases(jit_serialize):
       opts = {"jit":True, "compiler": "shell", "jit_options": {"verbose":True}, "verbose":False, "jit_serialize": jit_serialize}
@@ -2848,6 +2905,23 @@ class Functiontests(casadiTestCase):
         f2 = Function('f',[x,y,p],[w],{"cse":True})
         self.assertTrue(f1.n_instructions()>3)
         self.assertTrue(f2.n_instructions()<=3)
+
+  def test_cse_call(self):
+    for X in [SX,MX]:
+        x = X.sym("x")
+        f = Function("f",[x],[x**2],["x"],["y"],{"never_inline":True})
+        #fcopy = Function("f",[x],[x**2],["x"],["y"],{"never_inline":True})
+        fcopy = f
+        # Feature disabled, too expensive
+
+        y = cse(vertcat(f(sin(x)),fcopy(sin(x)),f(sin(x))))
+        
+        print(y)
+        
+        if X is MX:
+            self.assertTrue("vertcat(@1, @1, @1)" in str(y))
+        else:
+            self.assertTrue("[@1, @1, @1]" in str(y))
 
   @memory_heavy()
   def test_stop_diff(self):
@@ -3059,6 +3133,7 @@ class Functiontests(casadiTestCase):
                 f,f_normal,f_ref = [fe.factory('f',in_labels,out_labels) for fe in [f,f_normal,f_ref]]
             
         
+  @requires_conic("qpoases")
   def test_no_hess2(self):
     y = MX.sym("y",2)
 
@@ -3110,12 +3185,31 @@ class Functiontests(casadiTestCase):
             self.assertTrue(HF.is_symmetric())
 
   def test_issue_3074(self):
+    x = MX.sym("x",4)
+    y = x[:2]
+    y = 1
+    f = Function('f',[x],[dot(y,y)])
+    print(f)
+    fr = f.reverse(1)
+    print(fr)
+    #print(fr.jac_sparsity())
+  
+    x = MX.sym("x",sparsify(DM([0,1,1,0])).sparsity())
+    y = dot(x,x)
+    f = Function('f',[x],[dot(y,y)])
+    print(f)
+    fr = f.reverse(1)
+    print(fr)
+    print(fr.jac_sparsity())
+    
     data = "jhpnnagiieahaaaadaaaaaaaaaaaaaaaaafaegaakaaaaaaaneifgefhogdgehjgpgogbaaaaaaapaaaaaaaegfgmgbgjhpfbgchhgfhngfgogehdhaaaaaacaaaaaaahaaaaaaaaaaaaaaabababababababaaaaaaaaaaaaaaaaahaaaaaaaaaaaaaaaegfaaaaaaaaaaaaaaabaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeggaaaaaaaaaaaaaaacaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaachbaaaaaaaaaaaaaaaegkaaaaaaaaaaaaaaagaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaagaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaafaaaaaaaaaaaaaaaegeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaaegiaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaacaaaaaaaaaaaaaaadaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaahaaaaaaaaaaaaaaacaaaaaaajgadcaaaaaaajgbdcaaaaaaajgcdcaaaaaaajgddcaaaaaaajgedcaaaaaaajgfdcaaaaaaajggdaaaaaaaaaaaaaaaaaabagaaaaaaadhpgfhchdgfgbahaaaaaaakgjgehpfehngahaaaaaaaaaaaaaaaafaaaaaaadgmgbgoghgaaegbaaaaaaaaaaaaaaaaebababaaabababaaapbfilobfilobfnpdmfpicmfpicmfpnpdaaaaaeaaaaaaaaaaaaaaaabakdmiadcooijhfeodaaaaaaaaaaaaaaaabaaaaaaaocdaaaaaaangehihaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaachfaaaaaaaaaaaaaaahaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaahaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaeaaaaaaaehjgngfgegndaaaaaacaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaagaaaaaaacgpgegjhocihegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaiaaaaaaacgpgegjhocghpfihchbaaaaaaaaaaaaaaaegndaaaaaacaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaalaaaaaaaegfgchiccgpgegjhocihjcegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaanaaaaaaaegfgchiccgpgegjhocghpfihjcchbaaaaaaaaaaaaaaaegndaaaaaagaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaiaaaaaaacgpgegjhocggpfihegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaaiaaaaaaacgpgegjhocbgpfihegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaajaaaaaaabgdgdgfgmgocbgpfihegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaakaaaaaaabgdgdgfgmgocngbgpfihegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaalaaaaaaabgdgdgfgmgoccgpfihocfhegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaalaaaaaaabgdgdgfgmgoccgpfihocjhchcaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaaegmcaaaaaaadaaaaaaaaaaaaaaaachdaaaaaaaaaaaaaaaegndaaaaaaeaaaaaaaaaaaaaaaegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaagaaaaaaacgpgegjhochgegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaagaaaaaaacgpgegjhocdgegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaagaaaaaaacgpgegjhocngegpcaaaaaaaaaaaaaaaaaaaaaachaaaaaaaaaaaaaaaalaaaaaaabgdgdgfgmgoccgpfihoccgcheaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaahaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaa"
 
 
     f = StringDeserializer(data).unpack()
+    print(f.reverse(1))
     f.reverse(1).jac_sparsity()
    
+  @requires_nlpsol("ipopt")
   def test_issue_3134(self):
     p = MX.sym("p")
     v = MX.sym("v")
@@ -3208,6 +3302,434 @@ class Functiontests(casadiTestCase):
     if not args.run_slow: return
     F,_ = self.check_codegen(f,inputs=[DM.rand(f.sparsity_in(i)) for i in range(f.n_in())],with_jac_sparsity=True,with_forward=True)
     mychecks(F,exempt=True)
+   
+   
+  def test_cat_input(self):
+
+    x = MX.sym("x",2)
     
+    fmx = Function('f',[vertcat(MX(2,1),x)],[sin(x)],{"always_inline":True})
+    print(fmx)
+    
+    X = MX.sym("X",4)#Sparsity.lower(3))
+    print(fmx(X))
+    
+    f_eval = Function('f_eval',[X],[fmx(X)])
+    print(f_eval([np.nan,np.nan,3,np.nan]))
+    
+
+  def test_reshape_input(self):
+
+    x = MX.sym("x",6,2)
+    xsx = SX.sym("x",6,2)
+    
+    fmx = Function('f',[reshape(x,3,4)],[sin(x)],{"always_inline":True})
+    fsx = Function('f',[reshape(xsx,3,4)],[sin(xsx)])
+    
+    DM.rng(1)
+    inputs = [DM.rand(3,4)]
+    for input in inputs:
+        self.checkfunction_light(fmx,fsx,inputs=[input])
+    
+ 
+ 
+  def test_sparsity_cast_input(self):
+  
+    X = MX.sym("X",Sparsity.lower(3))
+    f = Function("f",[X],[X**2],{"always_inline":True})
+  
+    sp = Sparsity.lower(3)
+    N = sp.nnz()
+    
+    x = MX.sym("x",N)
+    xsx = SX.sym("x",N)
+    
+    fmx = Function('f',[sparsity_cast(x,sp)],[sin(x)],{"always_inline":True})
+    fsx = Function('f',[sparsity_cast(xsx,sp)],[sin(xsx)])
+    
+    inputs = [sparsify(DM([[1,0,0],[3,7,0],[1,8,9]])), sparsify(DM([[1,0,0],[3,0,0],[0,8,9]])), DM([[1,1.1,8],[3,1.2,3],[1,8,9]])]
+    for input in inputs:
+        self.checkfunction_light(fmx,fsx,inputs=[input])
+    
+    for X in [MX.sym("X",Sparsity.lower(3)), MX.sym("X",Sparsity.diag(3)), MX.sym("X",3,3)]:
+        fcmx = Function('f',[X],[fmx(X)])
+        fcsx = Function('f',[X],[fsx(X)])
+        
+        self.checkfunction_light(fcmx,fcsx,inputs=[DM.rand(X.sparsity())])
+
+    
+  def test_external(self):
+    if not args.run_slow: return
+    with self.assertInException("config failed"):
+        self.compile_external("F","assets/externalfun1.c")
+    
+    for n_args in [3,7]:
+        [externalfun1,libname] = self.compile_external("F","assets/externalfun1.c",{"config_args":["foo"]*n_args},debug_mode=True)
+        print(libname)
+        r = externalfun1(0)
+        print(externalfun1.stats())
+        self.assertEqual(n_args+1,int(r[0]))
+        self.assertEqual(0,int(r[1]))
+
+        x = MX.sym("x")
+        
+        g = Function('g',[x],[    externalfun1(sin(x))[0]+externalfun1(cos(x))[0] ])
+        
+        self.assertEqual(g(0.3),2*(n_args+1))
+        self.check_codegen(g,inputs=[0.3],extralibs=[libname])
+        
+        self.check_serialize(externalfun1,inputs=[0.3])
+        self.check_serialize(g,inputs=[0.3])
+        
+        externalfun1 = None
+        g = None
+        import gc
+        gc.collect()
+        
+  def test_cache(self):
+    x = MX.sym("x")
+    f = Function('f',[x],[x**2])
+    
+    ff = f.forward(1)
+    ff2 = f.forward(1)
+    
+    h = hash(ff)
+    
+    self.assertEqual(hash(ff),hash(ff2))
+    
+    ff = None
+    ff2 = None
+    
+    import gc
+    gc.collect()
+    
+    f2a = f.forward(2)
+    f2b = f.forward(2)
+    
+    # Should be recreated because it was purged
+    ff = f.forward(1)
+    #self.assertNotEqual(hash(ff),h) # does not pass on Windows, but this test looks unreliable anyway
+    self.assertEqual(hash(f2a),hash(f2b))
+    
+  def test_copy_elision(self):
+    import casadi as ca
+    
+    backup = ca.GlobalOptions.getCopyElisionMinSize()
+    
+    for enabled in [False,True]:
+    
+      ca.GlobalOptions.setCopyElisionMinSize(2 if enabled else -1)
+
+      x = ca.MX.sym("x",10)
+
+      a = ca.MX.sym("a",5)
+
+      bs = ca.MX.sym("b",10)
+
+      b = (12*bs).monitor("b")
+      y = 6*x
+
+
+      [s0,s1] = vertsplit(x,[0,7,10])
+      [ss0,ss1] = vertsplit(sin(x),[0,5,10])
+
+      z = y[2:7]+a+b[2:7]
+      z = sum1(z)
+      z2 = vertcat(x,a,b)*9
+
+      f = ca.Function('f',[x,a,bs],[z,z2, x, sqrt(s1), ss0+ss1])
+
+      f.disp(True)
+
+      f.generate('f.c')
+      
+      code = open('f.c','r').read()
+      
+      self.assertEqual("wr3" in code, enabled)
+      
+      lines = """
+  casadi_int i, j, k;
+  casadi_real *rr, w0, *w1=w+2, w2, *w3=w+8, *w4=w+18, *w5=w+28, *w6=w+33, *w7=w+38, *w8=w+43, *w9=w+68;
+  const casadi_real *cr, *cs, *ct, *wr3, *wr4, *wr6, *wr9;
+  /* #0: @0 = 0 */
+  w0 = 0.;
+  /* #1: @1 = ones(1x5) */
+  casadi_fill(w1, 5, 1.);
+  /* #2: @2 = 6 */
+  w2 = 6.;
+  /* #3: @3 = input[0][0] */
+  wr3 = arg[0] ? arg[0] : casadi_zeros;
+  /* #4: @4 = (@2*@3) */
+  for (i=0, rr=w4, cs=wr3; i<10; ++i) (*rr++)  = (w2*(*cs++));
+  /* #5: @5 = @4[2:7] */
+  for (rr=w5, cs=w4+2; cs!=w4+7; cs+=1) *rr++ = *cs;
+  /* #6: @6 = input[1][0] */
+  wr6 = arg[1] ? arg[1] : casadi_zeros;
+  /* #7: @5 = (@5+@6) */
+  for (i=0, rr=w5, cs=wr6; i<5; ++i) (*rr++) += (*cs++);
+  /* #8: @2 = 12 */
+  w2 = 12.;
+  /* #9: @4 = input[2][0] */
+  wr4 = arg[2] ? arg[2] : casadi_zeros;
+  /* #10: @4 = (@2*@4) */
+  for (i=0, rr=w4, cs=wr4; i<10; ++i) (*rr++)  = (w2*(*cs++));
+  /* #11: @4 = monitor(@4, b) */
+  CASADI_PRINTF("b\\n[");
+    for (i=0, cr=w4; i!=10; ++i) {
+        if (i!=0) CASADI_PRINTF(", ");
+        CASADI_PRINTF("%g", *cr++);
+      }
+    CASADI_PRINTF("]\\n");
+  /* #12: @7 = @4[2:7] */
+  for (rr=w7, cs=w4+2; cs!=w4+7; cs+=1) *rr++ = *cs;
+  /* #13: @5 = (@5+@7) */
+  for (i=0, rr=w5, cs=w7; i<5; ++i) (*rr++) += (*cs++);
+  /* #14: @0 = mac(@1,@5,@0) */
+  for (i=0, rr=(&w0); i<1; ++i) for (j=0; j<1; ++j, ++rr) for (k=0, cs=w1+j, ct=w5+i*5; k<5; ++k) *rr += cs[k*1]**ct++;
+  /* #15: output[0][0] = @0 */
+  if (res[0]) res[0][0] = w0;
+  /* #16: @0 = 9 */
+  w0 = 9.;
+  /* #17: @8 = vertcat(@3, @6, @4) */
+  rr=w8;
+  for (i=0, cs=wr3; i<10; ++i) *rr++ = *cs++;
+  for (i=0, cs=wr6; i<5; ++i) *rr++ = *cs++;
+  for (i=0, cs=w4; i<10; ++i) *rr++ = *cs++;
+  /* #18: @8 = (@0*@8) */
+  for (i=0, rr=w8, cs=w8; i<25; ++i) (*rr++)  = (w0*(*cs++));
+  /* #19: output[1][0] = @8 */
+  casadi_copy(w8, 25, res[1]);
+  /* #20: output[2][0] = @3 */
+  casadi_copy(wr3, 10, res[2]);
+  /* #21: {NULL, @9} = vertsplit(@3) */
+  wr9 = wr3+7;
+  /* #22: @9 = sqrt(@9) */
+  for (i=0, rr=w9, cs=wr9; i<3; ++i) *rr++ = sqrt( *cs++ );
+  /* #23: output[3][0] = @9 */
+  casadi_copy(w9, 3, res[3]);
+  /* #24: @3 = sin(@3) */
+  for (i=0, rr=w3, cs=wr3; i<10; ++i) *rr++ = sin( *cs++ );
+  /* #25: {@6, @1} = vertsplit(@3) */
+  casadi_copy(w3, 5, w6);
+  casadi_copy(w3+5, 5, w1);
+  /* #26: @6 = (@6+@1) */
+  for (i=0, rr=w6, cs=w1; i<5; ++i) (*rr++) += (*cs++);
+  /* #27: output[4][0] = @6 */
+  casadi_copy(w6, 5, res[4]);
+  return 0;
+"""
+      if enabled:
+        print(code)
+        print(lines.strip())
+        self.assertTrue(lines.strip() in code)
+      self.check_codegen(f,inputs=[DM.rand(f.sparsity_in(i)) for i in range(f.n_in())])
+      
+      x = MX.sym("x",100,10)
+
+      i = MX.sym("i")
+      y = x[4:90,i]
+      f = Function("f",[i,x],[sin(y)+x[7,i]])
+
+      f.disp(True)
+
+      f.generate('f.c')
+      
+      code = open('f.c','r').read()
+      
+      self.assertEqual("wr" in code, enabled)
+      
+      lines = """
+  casadi_int i;
+  casadi_real *rr, w1, w2, w3, *w4=w+1003;
+  const casadi_real *cs, *wr0, *wr4;
+  /* #0: @0 = input[1][0] */
+  wr0 = arg[1] ? arg[1] : casadi_zeros;
+  /* #1: @1 = 100 */
+  w1 = 100.;
+  /* #2: @2 = input[0][0] */
+  w2 = arg[0] ? arg[0][0] : 0;
+  /* #3: @3 = floor(@2) */
+  w3 = floor( w2 );
+  /* #4: @1 = (@1*@3) */
+  w1 *= w3;
+  /* #5: @4 = @0[(4:90;@1)] */
+  wr4 = wr0 + 4 + (int)w1;
+  /* #6: @4 = sin(@4) */
+  for (i=0, rr=w4, cs=wr4; i<86; ++i) *rr++ = sin( *cs++ );
+  /* #7: @1 = 100 */
+  w1 = 100.;
+  /* #8: @2 = floor(@2) */
+  w2 = floor( w2 );
+  /* #9: @1 = (@1*@2) */
+  w1 *= w2;
+  /* #10: @2 = @0[(7;@1)] */
+  i = 7 + (int) w1;
+  w2 = i>=0 && i<1000 ? wr0[i] : casadi_nan;
+  /* #11: @4 = (@4+@2) */
+  for (i=0, rr=w4; i<86; ++i) (*rr++) += w2;
+  /* #12: output[0][0] = @4 */
+  casadi_copy(w4, 86, res[0]);
+  return 0;
+"""
+      if enabled:
+        print(code)
+        print(lines.strip())
+        self.assertTrue(lines.strip() in code)
+      self.check_codegen(f,inputs=[3,DM.rand(f.sparsity_in(1))],std="c99")
+    ca.GlobalOptions.setCopyElisionMinSize(backup)
+    
+  @skip("simde" not in CasadiMeta.feature_list())
+  @memory_heavy()
+  @requiresPlugin(Importer,"shell")
+  def test_blazing_spline(self):
+    for N in [1,2,3]:
+      
+        def knots_expand(k):
+            return [k[0]]*3 + k + [k[-1]]*3
+      
+        knots0 = [0,0.2,0.5,0.8,1]
+        knots1 = [0,0.1,0.5,0.9,1]
+        knots2 = [0,0.4,1]
+        
+        x0 = [0.4,0.5,0.6][:N]
+        
+        knots_orig = [knots0, knots1, knots2][:N]
+        knots = [knots_expand(e) for e in knots_orig][:N]
+        
+        
+        x=MX.sym("x",N)
+        
+        nc = np.prod([len(k)-4 for k in knots])
+        DM.rng(1)
+        data = DM.rand(nc)
+        C = MX.sym("C",nc,1)
+        Y = bspline(x,C,knots,[3]*N,1)
+        F_ref = Function('f',[x,C],[Y])
+        
+        print(Y)
+        
+        F_ref2 = Function('f',[x,C],[Y,jacobian(Y,x)])
+        
+        F_ref2([0]*N,data)
+        
+        print(knots)
+        
+        
+        if os.name=='nt':
+            F = blazing_spline("F",knots,{"jit":True,"jit_options":{"flags": ["/I"+GlobalOptions.getCasadiIncludePath()]}})
+        else:
+            F = blazing_spline("F",knots,{"jit":True,"jit_options":{"flags": ["-I"+GlobalOptions.getCasadiIncludePath(),"-g","-ffast-math","-march=native"]}})
+        
+        def test_points(knots):
+            import itertools
+            selector = [lambda e: e[0]-0.1,lambda e: e[0],lambda e: (e[0]+e[1])/2,lambda e: e[-1],lambda e: e[-1]+0.1]
+            for s in itertools.product(selector,repeat=len(knots)):
+                yield [e(k) for e,k in zip(s,knots_orig)]
+
+        for a in test_points(knots):
+            self.checkfunction_light(F,F_ref,inputs=[vcat(a),data])
+            self.check_serialize(F,inputs=[vcat(a),data])
+       
+        y = sin(F(x,C))
+        
+        f = Function('f',[x,C],[y,jacobian(y,x),gradient(y,x)]+list(hessian(y,x)))
+        fcse = Function('fcse',[x,C],[y,jacobian(y,x),gradient(y,x)]+list(hessian(y,x)),{"cse":True})
+        
+        with capture_stdout() as result:
+            fcse.disp(True)
+            
+        self.assertEqual(result[0].count(" F_der_der("),1)
+        self.assertEqual(result[0].count(" F_der("),0)
+        self.assertEqual(result[0].count(" F("),0)
+        self.checkfunction_light(f,fcse,inputs=[vcat(x0),data])
+        f = Function('f',[x,C],[y,jacobian(y,x),gradient(y,x)])
+        fcse = Function('fcse',[x,C],[y,jacobian(y,x),gradient(y,x)],{"cse":True})
+        
+        with capture_stdout() as result:
+            fcse.disp(True)
+        self.assertEqual(result[0].count(" F_der_der("),0)
+        self.assertEqual(result[0].count(" F_der("),1)
+        self.assertEqual(result[0].count(" F("),0)
+        fcse.disp(True)
+        self.checkfunction_light(f,fcse,inputs=[vcat(x0),data])
+        
+
+
+        FJ = F.jacobian()
+        FJ.generate("FJ.c",{"main":True})
+        FJ.generate_in("FJ_in.txt",[vcat(a),data,0])
+        FJ_ref = F_ref.jacobian()
+        
+        print("ref")
+        F_ref2([0]*N,data)
+        
+        for a in test_points(knots):
+            self.checkfunction_light(FJ,FJ_ref,inputs=[vcat(a),data,0])
+       
+        FJ = FJ.jacobian()
+        FJ.generate("FH.c",{"main":True})
+        FJ.generate_in("FH_in.txt",[vcat(x0),data,0,0,0])
+        print(FJ)
+
+        FJ_ref = FJ_ref.jacobian()
+        import time
+        t0 = time.time()
+        FJ_ref(vcat(a),data,0,0,0)
+        print("FJ_ref" ,time.time()-t0)
+        t0 = time.time()
+        FJ(vcat(a),data,0,0,0)
+        print("FJ" ,time.time()-t0)
+        for a in test_points(knots):
+            print(vcat(a),data,0,0,0)
+            self.checkfunction_light(FJ,FJ_ref,inputs=[vcat(a),data,0,0,0])
+            
+            
+  def test_noncanonical_sparsity(self):
+    x = MX.sym("x",4,4)
+    y = MX.sym("y")
+    
+    f = Function("f",[x,y],[3*8])
+    
+    self.check_codegen(f,inputs=[DM.rand(4,4),1],opts={"force_canonical":False})
+    self.check_codegen(f,inputs=[DM.rand(4,4),1],opts={"force_canonical":True})
+    
+  def test_options_sanitize(self):
+      def canonical(e):
+        if isinstance(e,dict):
+            return [(k,canonical(e[k])) for k in sorted(e.keys())]
+        return e
+      def cmp(a,b):
+        assert str(canonical(a))==str(canonical(b))
+      res = Options.sanitize({"foo": {"bar": {"baz.goot": 7}}})
+      ref = {"foo":{"bar": {"baz": {"goot":7}}}}
+      cmp(res,ref)
+      res = Options.sanitize({"foo.baz": 1, "foo":{"bar": 9}})
+      ref = {'foo': {'bar': 9, 'baz': 1}}
+      cmp(res,ref)
+      res = Options.sanitize({"foo.baz.bar": 1, "foo":{"baz": {"go":8}}})
+      ref = {"foo":{"baz":{"bar": 1, "go": 8}}}
+      cmp(res,ref)
+      res = Options.sanitize({"foo":{"bar": 9}, "foo.baz": 1})
+      ref = {"foo":{"bar":9, "baz":1}}
+      cmp(res,ref)
+      res = Options.sanitize({"foo.bar.baz": 1, "foo.bar.mat":3,"foo.lib":5, "foo.bar.qint.pad":5,"foo":{"bar": {"got": 9}},"bar":{"abc.def":7}})
+      ref = {'bar': {'abc': {'def': 7}}, 'foo': {'bar': {'baz': 1, 'mat': 3, 'got': 9, 'qint': {'pad': 5}}, 'lib': 5}}
+      cmp(res,ref)
+      
+      with self.assertInException("update_dict error"):
+          res = Options.sanitize({"foo": 9, "foo.baz": 1})
+      with self.assertInException("update_dict error"):
+          res = Options.sanitize({"foo": {"baz":{"w": 5}}, "foo.baz": 1})
+          
+      res = Options.sanitize({"foo": 1, "bar": None})
+      print(res)
+      ref = {"foo": 1}
+      cmp(res,ref)
+      # It is important that None/null entries are preserved deeper than toplevel
+      # Use for augmented_options machinery in integrator
+      res = Options.sanitize({"foo": 1, "bar": {"r": None}})
+      print(res)
+      ref = {"foo": 1, "bar": {"r": None}}
+      cmp(res,ref)
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main()   

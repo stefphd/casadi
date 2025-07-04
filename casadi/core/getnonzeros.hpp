@@ -60,6 +60,12 @@ namespace casadi {
         \identifier{i4} */
     void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const override;
 
+    /** \brief Evaluate the MX node on a const/linear/nonlinear partition
+
+        \identifier{28g} */
+    void eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const override;
+
     /** \brief Calculate forward mode directional derivatives
 
         \identifier{i5} */
@@ -145,7 +151,9 @@ namespace casadi {
         \identifier{ie} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Check if two nodes are equivalent up to a given depth
 
@@ -216,7 +224,9 @@ namespace casadi {
         \identifier{im} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Check if two nodes are equivalent up to a given depth
 
@@ -288,7 +298,9 @@ namespace casadi {
         \identifier{iu} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Check if two nodes are equivalent up to a given depth
 

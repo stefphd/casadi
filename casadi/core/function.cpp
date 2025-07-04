@@ -36,6 +36,7 @@
 #include "serializing_stream.hpp"
 #include "serializer.hpp"
 #include "tools.hpp"
+#include "filesystem_impl.hpp"
 
 #include <cctype>
 #include <fstream>
@@ -726,7 +727,7 @@ namespace casadi {
       if (parallelization=="unroll") {
         for (auto&& w : v) w = (*this)(w);
       } else {
-        for (auto&& w : v) call(std::vector<MX>(w), w, true, false);
+        for (auto&& w : v) call(std::vector<MX>(w), w, !is_a("SXFunction"), false);
       }
       // Gather outputs
       std::vector<MX> res(n_out());
@@ -925,7 +926,15 @@ namespace casadi {
   }
 
   Dict Function::stats(int mem) const {
-    return (*this)->get_stats(memory(mem));
+    if (!(*this)->has_memory(mem)) {
+      THROW_ERROR("stats",
+        "No stats available: Function/solver was not yet numerically evaluated.");
+    }
+    try {
+      return (*this)->get_stats(memory(mem));
+    } catch(std::exception& e) {
+      THROW_ERROR("stats", e.what());
+    }
   }
 
   const std::vector<Sparsity>& Function::jac_sparsity(bool compact) const {
@@ -941,7 +950,9 @@ namespace casadi {
 
   Sparsity Function::jac_sparsity(casadi_int oind, casadi_int iind, bool compact) const {
     try {
-      return (*this)->jac_sparsity(oind, iind, compact, (*this)->jac_is_symm(oind, iind));
+      bool symm = (*this)->jac_is_symm(oind, iind);
+      symm = symm && sparsity_out(oind).is_dense();
+      return (*this)->jac_sparsity(oind, iind, compact, symm);
     } catch(std::exception& e) {
       THROW_ERROR("jac_sparsity", e.what());
     }
@@ -969,6 +980,20 @@ namespace casadi {
     } catch(std::exception& e) {
       THROW_ERROR("index_out", e.what());
     }
+  }
+
+  bool Function::has_in(const std::string &name) const {
+    for (const std::string& s : (*this)->name_in_) {
+      if (s==name) return true;
+    }
+    return false;
+  }
+
+  bool Function::has_out(const std::string &name) const {
+    for (const std::string& s : (*this)->name_out_) {
+      if (s==name) return true;
+    }
+    return false;
   }
 
   const std::string& Function::name_in(casadi_int ind) const {
@@ -1178,8 +1203,8 @@ namespace casadi {
     std::vector<double> d = nz_from_in(arg);
 
     // Set up output stream
-    std::ofstream of(fname);
-    casadi_assert(of.good(), "Error opening stream '" + fname + "'.");
+    std::ofstream of;
+    Filesystem::open(of, fname);
     normalized_setup(of);
 
     // Encode each output
@@ -1193,8 +1218,8 @@ namespace casadi {
     std::vector<double> d = nz_from_out(res);
 
     // Set up output stream
-    std::ofstream of(fname);
-    casadi_assert(of.good(), "Error opening stream '" + fname + "'.");
+    std::ofstream of;
+    Filesystem::open(of, fname);
     normalized_setup(of);
 
     // Encode each output
@@ -1235,7 +1260,8 @@ namespace casadi {
 
   void Function::export_code(const std::string& lang,
       const std::string &fname, const Dict& options) const {
-    std::ofstream stream(fname);
+    std::ofstream stream;
+    Filesystem::open(stream, fname);
     return (*this)->export_code(lang, stream, options);
   }
 
@@ -1492,7 +1518,7 @@ namespace casadi {
       // For consistency check
       casadi_int depth = call_depth_;
 #endif // WITH_EXTRA_CHECKS
-      int ret = (*this)->eval_gen(arg, res, iw, w, memory(mem));
+      int ret = (*this)->eval_gen(arg, res, iw, w, memory(mem), false, false);
 #ifdef WITH_EXTRA_CHECKS
       // Consitency check
       casadi_assert_dev(call_depth_==depth);
@@ -1517,7 +1543,7 @@ namespace casadi {
   int Function::operator()(const SXElem** arg, SXElem** res,
       casadi_int* iw, SXElem* w, int mem) const {
     try {
-      return (*this)->eval_sx(arg, res, iw, w, memory(mem));
+      return (*this)->eval_sx(arg, res, iw, w, memory(mem), false, false);
     } catch(std::exception& e) {
       THROW_ERROR("operator()", e.what());
     }
@@ -1637,6 +1663,11 @@ namespace casadi {
 
   bool Function::is_a(const std::string& type, bool recursive) const {
     return (*this)->is_a(type, recursive);
+  }
+
+  void Function::merge(const std::vector<MX>& arg,
+      std::vector<MX>& subs_from, std::vector<MX>& subs_to) const {
+    return (*this)->merge(arg, subs_from, subs_to);
   }
 
   std::vector<SX> Function::free_sx() const {
@@ -1904,6 +1935,14 @@ namespace casadi {
     return (*this)->info();
   }
 
+  std::vector<SX> Function::order(const std::vector<SX>& expr) {
+    return SXFunction::order(expr);
+  }
+
+  std::vector<MX> Function::order(const std::vector<MX>& expr) {
+    return MXFunction::order(expr);
+  }
+
   FunctionBuffer::FunctionBuffer(const Function& f) : f_(f) {
     w_.resize(f_.sz_w());
     iw_.resize(f_.sz_iw());
@@ -1965,6 +2004,10 @@ namespace casadi {
 
   void CASADI_EXPORT _function_buffer_eval(void* raw) {
     static_cast<FunctionBuffer*>(raw)->_eval();
+  }
+
+  Dict FunctionBuffer::stats() const {
+    return f_.stats(mem_);
   }
 
 } // namespace casadi

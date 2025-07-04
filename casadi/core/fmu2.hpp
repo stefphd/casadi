@@ -25,8 +25,6 @@
 #ifndef CASADI_FMU2_HPP
 #define CASADI_FMU2_HPP
 
-#ifdef WITH_FMI2
-
 #include "fmu_impl.hpp"
 
 #include <fmi2Functions.h>
@@ -40,7 +38,7 @@ namespace casadi {
     \author Joel Andersson
     \date 2023
 
-    \identifier{273} */
+    \identifier{2at} */
 class CASADI_EXPORT Fmu2 : public FmuInternal {
  public:
   // Constructor
@@ -53,29 +51,14 @@ class CASADI_EXPORT Fmu2 : public FmuInternal {
 
   /** \brief Get type name
 
-      \identifier{274} */
+      \identifier{2au} */
   std::string class_name() const override { return "Fmu2";}
 
   // Initialize
   void init(const DaeBuilderInternal* dae) override;
 
-  // Finalize
-  void finalize() override;
-
-  // Path to the FMU resource directory
-  std::string resource_loc_;
-
-  // Tolerance
-  double fmutol_;
-
-  // Instance name
-  std::string instance_name_;
-
-  // GUID
-  std::string guid_;
-
-  // Logging?
-  bool logging_on_;
+  // Set C API functions
+  void load_functions() override;
 
   // Variables used for initialization, by type
   std::vector<fmi2ValueReference> vr_real_, vr_integer_, vr_boolean_, vr_string_;
@@ -88,9 +71,6 @@ class CASADI_EXPORT Fmu2 : public FmuInternal {
   std::vector<std::string> vn_aux_real_, vn_aux_integer_, vn_aux_boolean_, vn_aux_string_;
   std::vector<fmi2ValueReference> vr_aux_real_, vr_aux_integer_, vr_aux_boolean_, vr_aux_string_;
 
-  // Does the FMU declare analytic derivatives support?
-  bool declared_ad_;
-
   // Following members set in finalize
 
   // FMU C API function prototypes. Cf. FMI specification 2.0.2
@@ -101,6 +81,8 @@ class CASADI_EXPORT Fmu2 : public FmuInternal {
   fmi2EnterInitializationModeTYPE* enter_initialization_mode_;
   fmi2ExitInitializationModeTYPE* exit_initialization_mode_;
   fmi2EnterContinuousTimeModeTYPE* enter_continuous_time_mode_;
+  fmi2GetDerivativesTYPE* get_derivatives_;
+  fmi2SetTimeTYPE* set_time_;
   fmi2GetRealTYPE* get_real_;
   fmi2SetRealTYPE* set_real_;
   fmi2GetBooleanTYPE* get_boolean_;
@@ -110,6 +92,7 @@ class CASADI_EXPORT Fmu2 : public FmuInternal {
   fmi2GetStringTYPE* get_string_;
   fmi2SetStringTYPE* set_string_;
   fmi2GetDirectionalDerivativeTYPE* get_directional_derivative_;
+  fmi2NewDiscreteStatesTYPE* new_discrete_states_;
 
   // Callback functions
   fmi2CallbackFunctions functions_;
@@ -124,61 +107,56 @@ class CASADI_EXPORT Fmu2 : public FmuInternal {
 
   Value aux_value_;
 
-  // Does the FMU support analytic derivatives?
-  bool has_ad() const override { return get_directional_derivative_ != nullptr; }
+  // Name of system, per the FMI specification
+  std::string system_infix() const override;
 
   // New memory object
-  fmi2Component instantiate() const;
+  void* instantiate() const override;
 
   // Free FMU instance
-  void free_instance(void* c) const override;
+  void free_instance(void* instance) const override;
 
   // Reset solver
-  int reset(fmi2Component c);
-
-  // Setup experiment
-  void setup_experiment(fmi2Component c) const;
+  int reset(void* instance);
 
   // Enter initialization mode
-  int enter_initialization_mode(fmi2Component c) const;
+  int enter_initialization_mode(void* instance) const override;
 
   // Exit initialization mode
-  int exit_initialization_mode(fmi2Component c) const;
+  int exit_initialization_mode(void* instance) const override;
+
+  // Enter continuous-time mode
+  int enter_continuous_time_mode(void* instance) const override;
+
+  // Update discrete states
+  int update_discrete_states(void* instance, EventMemory* eventmem) const override;
+
+  int get_derivatives(void* instance, double* derivatives, size_t nx) const override;
+
+  // Set real values
+  int set_real(void* instance, const unsigned int* vr, size_t n_vr,
+    const double* values, size_t n_values) const override;
+
+  // Get/evaluate real values
+  int get_real(void* instance, const unsigned int* vr, size_t n_vr,
+    double* values, size_t n_values) const override;
+
+  // Forward mode AD
+  int get_directional_derivative(void* instance, const unsigned int* vr_out, size_t n_out,
+    const unsigned int* vr_in, size_t n_in, const double* seed, size_t n_seed,
+    double* sensitivity, size_t n_sensitivity) const override;
 
   // Copy values set in DaeBuilder to FMU
-  int set_values(fmi2Component c) const;
-
-  // Retrieve input variable values from FMU
-  int get_in(fmi2Component c, std::vector<fmi2Real>* v) const;
+  int set_values(void* instance) const override;
 
   // Retrieve auxilliary variables from FMU
-  int get_aux(fmi2Component c, Value* v) const;
+  int get_aux(void* instance) override;
 
   /** \brief Get stats
 
-      \identifier{275} */
+      \identifier{2av} */
   void get_stats(FmuMemory* m, Dict* stats,
     const std::vector<std::string>& name_in, const InputStruct* in) const override;
-
-  /** \brief Initalize memory block
-
-      \identifier{276} */
-  int init_mem(FmuMemory* m) const override;
-
-  // Calculate all requested variables
-  int eval(FmuMemory* m) const override;
-
-  // Calculate directional derivatives using AD
-  int eval_ad(FmuMemory* m) const override;
-
-  // Calculate directional derivatives using FD
-  int eval_fd(FmuMemory* m, bool independent_seeds) const override;
-
-  // Name of system, per the FMI specification
-  static std::string system_infix();
-
-  // DLL suffix, per the FMI specification
-  static std::string dll_suffix();
 
   // Process message
   static void logger(fmi2ComponentEnvironment componentEnvironment,
@@ -198,7 +176,5 @@ class CASADI_EXPORT Fmu2 : public FmuInternal {
 } // namespace casadi
 
 /// \endcond
-
-#endif  // WITH_FMI2
 
 #endif // CASADI_FMU2_HPP

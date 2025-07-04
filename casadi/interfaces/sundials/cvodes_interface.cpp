@@ -142,7 +142,7 @@ int CvodesInterface::init_mem(void* mem) const {
 
   // Initialize CVodes
   double t0 = 0;
-  THROWING(CVodeInit, m->mem, rhsF, t0, m->xz);
+  THROWING(CVodeInit, m->mem, rhsF, t0, m->v_xz);
 
   // Set tolerances
   if (scale_abstol_) {
@@ -193,7 +193,7 @@ int CvodesInterface::init_mem(void* mem) const {
   // Quadrature equations
   if (nq_>0) {
     // Initialize quadratures in CVodes
-    THROWING(CVodeQuadInit, m->mem, rhsQF, m->q);
+    THROWING(CVodeQuadInit, m->mem, rhsQF, m->v_q);
 
     // Should the quadrature errors be used for step size control?
     if (quad_err_con_) {
@@ -228,38 +228,43 @@ int CvodesInterface::rhsF(double t, N_Vector x, N_Vector xdot, void *user_data) 
   }
 }
 
-void CvodesInterface::reset(IntegratorMemory* mem,
-    const double* x, const double* z, const double* _p) const {
+void CvodesInterface::reset(IntegratorMemory* mem, bool first_call) const {
   if (verbose_) casadi_message(name_ + "::reset");
   auto m = to_mem(mem);
 
   // Reset the base classes
-  SundialsInterface::reset(mem, x, z, _p);
+  SundialsInterface::reset(mem, first_call);
 
-  // Re-initialize
-  THROWING(CVodeReInit, m->mem, m->t, m->xz);
+  // Only reinitialize solver at first call or if event handling is required
+  // May want to always enable this after more testing
+  if (first_call || ne_ > 0) {
+    // Re-initialize forward integration
+    THROWING(CVodeReInit, m->mem, m->t, m->v_xz);
 
-  // Re-initialize quadratures
-  if (nq_ > 0) {
-    N_VConst(0.0, m->q);
-    THROWING(CVodeQuadReInit, m->mem, m->q);
+    // Re-initialize quadratures
+    if (nq_ > 0) {
+      THROWING(CVodeQuadReInit, m->mem, m->v_q);
+    }
   }
 
-  // Re-initialize backward integration
-  if (nrx_ > 0) {
-    THROWING(CVodeAdjReInit, m->mem);
+  // How is this impacted by CVodeReInit?
+  if (first_call) {
+    // Re-initialize backward integration
+    if (nrx_ > 0) {
+      THROWING(CVodeAdjReInit, m->mem);
+    }
   }
 }
 
-void CvodesInterface::advance(IntegratorMemory* mem,
-    const double* u, double* x, double* z, double* q) const {
+int CvodesInterface::advance_noevent(IntegratorMemory* mem) const {
   auto m = to_mem(mem);
 
-  // Set controls
-  casadi_copy(u, nu_, m->u);
-
   // Do not integrate past change in input signals or past the end
-  THROWING(CVodeSetStopTime, m->mem, m->t_stop);
+  // The event handling may cause the stop time to become smaller than internal time reached,
+  // in which case the stop time cannot be enforced
+  if (m->t_stop >= m->tcur) {
+    THROWING(CVodeSetStopTime, m->mem, m->t_stop);
+  }
 
   // Integrate, unless already at desired time
   const double ttol = 1e-9;
@@ -268,40 +273,42 @@ void CvodesInterface::advance(IntegratorMemory* mem,
     double tret = m->t;
     if (nrx_>0) {
       // ... with taping
-      THROWING(CVodeF, m->mem, m->t_next, m->xz, &tret, CV_NORMAL, &m->ncheck);
+      THROWING(CVodeF, m->mem, m->t_next, m->v_xz, &tret, CV_NORMAL, &m->ncheck);
     } else {
       // ... without taping
-      THROWING(CVode, m->mem, m->t_next, m->xz, &tret, CV_NORMAL);
+      THROWING(CVode, m->mem, m->t_next, m->v_xz, &tret, CV_NORMAL);
     }
 
     // Get quadratures
     if (nq_ > 0) {
-      THROWING(CVodeGetQuad, m->mem, &tret, m->q);
+      THROWING(CVodeGetQuad, m->mem, &tret, m->v_q);
     }
   }
 
   // Set function outputs
-  casadi_copy(NV_DATA_S(m->xz), nx_, x);
-  casadi_copy(NV_DATA_S(m->q), nq_, q);
+  casadi_copy(NV_DATA_S(m->v_xz), nx_, m->x);
+  casadi_copy(NV_DATA_S(m->v_q), nq_, m->q);
 
   // Get stats
   THROWING(CVodeGetIntegratorStats, m->mem, &m->nsteps, &m->nfevals, &m->nlinsetups,
             &m->netfails, &m->qlast, &m->qcur, &m->hinused,
             &m->hlast, &m->hcur, &m->tcur);
   THROWING(CVodeGetNonlinSolvStats, m->mem, &m->nniters, &m->nncfails);
+
+  return 0;
 }
 
 void CvodesInterface::impulseB(IntegratorMemory* mem,
-    const double* rx, const double* rz, const double* rp) const {
+    const double* adj_x, const double* adj_z, const double* adj_q) const {
   auto m = to_mem(mem);
 
   // Call method in base class
-  SundialsInterface::impulseB(mem, rx, rz, rp);
+  SundialsInterface::impulseB(mem, adj_x, adj_z, adj_q);
 
   if (m->first_callB) {
     // Create backward problem
     THROWING(CVodeCreateB, m->mem, lmm_, iter_, &m->whichB);
-    THROWING(CVodeInitB, m->mem, m->whichB, rhsB, m->t, m->rxz);
+    THROWING(CVodeInitB, m->mem, m->whichB, rhsB, m->t, m->v_adj_xz);
     THROWING(CVodeSStolerancesB, m->mem, m->whichB, reltol_, abstol_);
     THROWING(CVodeSetUserDataB, m->mem, m->whichB, m);
     if (newton_scheme_==SD_DIRECT) {
@@ -328,7 +335,7 @@ void CvodesInterface::impulseB(IntegratorMemory* mem,
     }
 
     // Quadratures for the backward problem
-    THROWING(CVodeQuadInitB, m->mem, m->whichB, rhsQB, m->ruq);
+    THROWING(CVodeQuadInitB, m->mem, m->whichB, rhsQB, m->v_adj_pu);
     if (quad_err_con_) {
       THROWING(CVodeSetQuadErrConB, m->mem, m->whichB, true);
       THROWING(CVodeQuadSStolerancesB, m->mem, m->whichB, reltol_, abstol_);
@@ -341,13 +348,13 @@ void CvodesInterface::impulseB(IntegratorMemory* mem,
     save_offsets(m);
 
     // Reinitialize solver
-    THROWING(CVodeReInitB, m->mem, m->whichB, m->t, m->rxz);
-    THROWING(CVodeQuadReInitB, m->mem, m->whichB, m->ruq);
+    THROWING(CVodeReInitB, m->mem, m->whichB, m->t, m->v_adj_xz);
+    THROWING(CVodeQuadReInitB, m->mem, m->whichB, m->v_adj_pu);
   }
 }
 
 void CvodesInterface::retreat(IntegratorMemory* mem, const double* u,
-    double* rx, double* rq, double* uq) const {
+    double* adj_x, double* adj_p, double* adj_u) const {
   auto m = to_mem(mem);
 
   // Set controls
@@ -357,16 +364,16 @@ void CvodesInterface::retreat(IntegratorMemory* mem, const double* u,
   if (m->t_next < m->t) {
     THROWING(CVodeB, m->mem, m->t_next, CV_NORMAL);
     double tret;
-    THROWING(CVodeGetB, m->mem, m->whichB, &tret, m->rxz);
+    THROWING(CVodeGetB, m->mem, m->whichB, &tret, m->v_adj_xz);
     if (nrq_ > 0 || nuq_ > 0) {
-      THROWING(CVodeGetQuadB, m->mem, m->whichB, &tret, m->ruq);
+      THROWING(CVodeGetQuadB, m->mem, m->whichB, &tret, m->v_adj_pu);
     }
   }
 
   // Save outputs
-  casadi_copy(NV_DATA_S(m->rxz), nrx_, rx);
-  casadi_copy(NV_DATA_S(m->ruq), nrq_, rq);
-  casadi_copy(NV_DATA_S(m->ruq) + nrq_, nuq_, uq);
+  casadi_copy(NV_DATA_S(m->v_adj_xz), nrx_, adj_x);
+  casadi_copy(NV_DATA_S(m->v_adj_pu), nrq_, adj_p);
+  casadi_copy(NV_DATA_S(m->v_adj_pu) + nrq_, nuq_, adj_u);
 
   // Get stats
   CVodeMem cv_mem = static_cast<CVodeMem>(m->mem);
@@ -424,7 +431,7 @@ int CvodesInterface::rhsB(double t, N_Vector x, N_Vector rx, N_Vector rxdot, voi
     casadi_assert_dev(user_data);
     auto m = to_mem(user_data);
     auto& s = m->self;
-    if (s.calc_daeB(m, t, NV_DATA_S(x), nullptr, NV_DATA_S(rx), nullptr, m->rp,
+    if (s.calc_daeB(m, t, NV_DATA_S(x), nullptr, NV_DATA_S(rx), nullptr, m->adj_q,
       NV_DATA_S(rxdot), nullptr)) return 1;
     // Negate (note definition of g)
     casadi_scal(s.nrx_, -1., NV_DATA_S(rxdot));
@@ -488,14 +495,14 @@ int CvodesInterface::psolveF(double t, N_Vector x, N_Vector xdot, N_Vector r,
     auto m = to_mem(user_data);
     auto& s = m->self;
 
-    // Get right-hand sides in m->v1
+    // Get right-hand sides in m->tmp1
     double* v = NV_DATA_S(r);
-    casadi_copy(v, s.nx_, m->v1);
+    casadi_copy(v, s.nx_, m->tmp1);
 
     // Solve for undifferentiated right-hand-side, save to output
-    if (s.linsolF_.solve(m->jacF, m->v1, 1, false, m->mem_linsolF)) return 1;
+    if (s.linsolF_.solve(m->jacF, m->tmp1, 1, false, m->mem_linsolF)) return 1;
     v = NV_DATA_S(z); // possibly different from r
-    casadi_copy(m->v1, s.nx1_, v);
+    casadi_copy(m->tmp1, s.nx1_, v);
 
     // Sensitivity equations
     if (s.nfwd_ > 0) {
@@ -503,17 +510,17 @@ int CvodesInterface::psolveF(double t, N_Vector x, N_Vector xdot, N_Vector r,
       if (s.second_order_correction_) {
         // The outputs will double as seeds for jtimesF
         casadi_clear(v + s.nx1_, s.nx_ - s.nx1_);
-        if (s.calc_jtimesF(m, t, NV_DATA_S(x), nullptr, v, nullptr, m->v2, nullptr)) return 1;
+        if (s.calc_jtimesF(m, t, NV_DATA_S(x), nullptr, v, nullptr, m->tmp2, nullptr)) return 1;
 
-        // Subtract m->v2 from m->v1, scaled with -gamma
-        casadi_axpy(s.nx_ - s.nx1_, m->gamma, m->v2 + s.nx1_, m->v1 + s.nx1_);
+        // Subtract m->tmp2 from m->tmp1, scaled with -gamma
+        casadi_axpy(s.nx_ - s.nx1_, m->gamma, m->tmp2 + s.nx1_, m->tmp1 + s.nx1_);
       }
 
       // Solve for sensitivity right-hand-sides
-      if (s.linsolF_.solve(m->jacF, m->v1 + s.nx1_, s.nfwd_, false, m->mem_linsolF)) return 1;
+      if (s.linsolF_.solve(m->jacF, m->tmp1 + s.nx1_, s.nfwd_, false, m->mem_linsolF)) return 1;
 
       // Save to output, reordered
-      casadi_copy(m->v1 + s.nx1_, s.nx_ - s.nx1_, v + s.nx1_);
+      casadi_copy(m->tmp1 + s.nx1_, s.nx_ - s.nx1_, v + s.nx1_);
     }
 
     return 0;
@@ -529,14 +536,14 @@ int CvodesInterface::psolveB(double t, N_Vector x, N_Vector xB, N_Vector xdotB, 
     auto m = to_mem(user_data);
     auto& s = m->self;
 
-    // Get right-hand sides in m->v1
+    // Get right-hand sides in m->tmp1
     double* v = NV_DATA_S(rvecB);
-    casadi_copy(v, s.nrx_, m->v1);
+    casadi_copy(v, s.nrx_, m->tmp1);
 
     // Solve for undifferentiated right-hand-side, save to output
-    if (s.linsolF_.solve(m->jacF, m->v1, s.nadj_, true, m->mem_linsolF)) return 1;
+    if (s.linsolF_.solve(m->jacF, m->tmp1, s.nadj_, true, m->mem_linsolF)) return 1;
     v = NV_DATA_S(zvecB); // possibly different from rvecB
-    casadi_copy(m->v1, s.nrx1_ * s.nadj_, v);
+    casadi_copy(m->tmp1, s.nrx1_ * s.nadj_, v);
 
     // Sensitivity equations
     if (s.nfwd_ > 0) {
@@ -544,18 +551,19 @@ int CvodesInterface::psolveB(double t, N_Vector x, N_Vector xB, N_Vector xdotB, 
       if (s.second_order_correction_) {
         // The outputs will double as seeds for calc_daeB
         casadi_clear(v + s.nrx1_ * s.nadj_, s.nrx_ - s.nrx1_ * s.nadj_);
-        if (s.calc_daeB(m, t, NV_DATA_S(x), nullptr, v, nullptr, nullptr, m->v2, nullptr)) return 1;
-        // Subtract m->v2 from m->v1, scaled with gammaB
-        casadi_axpy(s.nrx_ - s.nrx1_ * s.nadj_, -m->gammaB, m->v2 + s.nrx1_ * s.nadj_,
-          m->v1 + s.nrx1_ * s.nadj_);
+        if (s.calc_daeB(m, t, NV_DATA_S(x), nullptr, v, nullptr, nullptr, m->tmp2, nullptr))
+          return 1;
+        // Subtract m->tmp2 from m->tmp1, scaled with gammaB
+        casadi_axpy(s.nrx_ - s.nrx1_ * s.nadj_, -m->gammaB, m->tmp2 + s.nrx1_ * s.nadj_,
+          m->tmp1 + s.nrx1_ * s.nadj_);
       }
 
       // Solve for sensitivity right-hand-sides
-      if (s.linsolF_.solve(m->jacF, m->v1 + s.nx1_, s.nadj_ * s.nfwd_,
+      if (s.linsolF_.solve(m->jacF, m->tmp1 + s.nx1_, s.nadj_ * s.nfwd_,
         true, m->mem_linsolF)) return 1;
 
       // Save to output, reordered
-      casadi_copy(m->v1 + s.nx1_, s.nx_ - s.nx1_, v + s.nx1_);
+      casadi_copy(m->tmp1 + s.nx1_, s.nx_ - s.nx1_, v + s.nx1_);
     }
 
     return 0;

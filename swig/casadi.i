@@ -55,15 +55,37 @@
 // Define printing routine
 
 #ifdef SWIGPYTHON
+
+#ifdef CASADI_WITH_PYTHON_GIL_RELEASE
+%{
+  // This .cxx was swig-compiled with WITH_PYTHON_GIL_RELEASE option
+  #define CASADI_WITH_PYTHON_GIL_RELEASE
+%}
+#else //CASADI_WITH_PYTHON_GIL_RELEASE
+%{
+  // This .cxx was swig-compiled without WITH_PYTHON_GIL_RELEASE option
+  #undef CASADI_WITH_PYTHON_GIL_RELEASE
+%}
+#endif //CASADI_WITH_PYTHON_GIL_RELEASE
+
+%ignore CASADI_SWIG_FLAGS;
+%include "swig_config.h"
+
 %{
   namespace casadi {
+
     // Redirect printout
     static void pythonlogger(const char* s, std::streamsize num, bool error) {
+#ifndef CASADI_WITH_PYTHON_GIL_RELEASE
       if (!casadi::InterruptHandler::is_main_thread()) {
         casadi::Logger::writeDefault(s, num, error);
         return;
       }
+#endif // CASADI_WITH_PYTHON_GIL_RELEASE
       int n = num;
+#ifdef CASADI_WITH_PYTHON_GIL_RELEASE
+      SWIG_PYTHON_THREAD_BEGIN_BLOCK;
+#endif // CASADI_WITH_PYTHON_GIL_RELEASE
       while (n>0) {
         if (error) {
           PySys_WriteStderr("%.*s", std::min(n, 1000), s);
@@ -73,11 +95,18 @@
         n -= 1000;
         s += 1000;
       }
+#ifdef CASADI_WITH_PYTHON_GIL_RELEASE
+      SWIG_PYTHON_THREAD_END_BLOCK;
+#endif // CASADI_WITH_PYTHON_GIL_RELEASE
     }
 
     static bool pythoncheckinterrupted() {
       if (!casadi::InterruptHandler::is_main_thread()) return false;
+#ifdef CASADI_WITH_PYTHON_GIL_RELEASE
+      SWIG_PYTHON_THREAD_BEGIN_BLOCK;
+#endif // CASADI_WITH_PYTHON_GIL_RELEASE
       return PyErr_CheckSignals();
+      // SWIG_PYTHON_THREAD_END_BLOCK is not needed, destructor will release GIL
     }
 
     std::string python_string_to_std_string(PyObject *str_py) {
@@ -95,10 +124,15 @@
 
     void handle_director_exception() {
 	    std::string msg = "Exception in SWIG director ";
+      // Note: CASADI_WITH_PYTHON_GIL_RELEASE case has SWIG_PYTHON_THREAD_BEGIN_BLOCK in the caller
+#ifndef CASADI_WITH_PYTHON_GIL_RELEASE
       SWIG_PYTHON_THREAD_BEGIN_BLOCK;
+#endif // CASADI_WITH_PYTHON_GIL_RELEASE
       if (PyErr_ExceptionMatches(PyExc_KeyboardInterrupt)) {
         PyErr_Clear();
+#ifndef CASADI_WITH_PYTHON_GIL_RELEASE
         SWIG_PYTHON_THREAD_END_BLOCK;
+#endif // CASADI_WITH_PYTHON_GIL_RELEASE
         throw casadi::KeyboardInterruptException();
       }
       PyObject *ptype, *pvalue, *ptraceback;
@@ -108,7 +142,9 @@
       Py_DECREF(msg_py);
       PyErr_Restore(ptype, pvalue, ptraceback);
       PyErr_Print();
+#ifndef CASADI_WITH_PYTHON_GIL_RELEASE
       SWIG_PYTHON_THREAD_END_BLOCK;
+#endif // CASADI_WITH_PYTHON_GIL_RELEASE
       casadi_error(msg.c_str());
 	  }
   }
@@ -1532,7 +1568,15 @@ namespace std {
           if (mxGetM(p)==0) return true;
           size_t len=mxGetN(p);
           std::vector<char> s(len+1);
-          if (mxGetString(p, &s[0], (len+1)*sizeof(char))) return false;
+          if (mxGetString(p, &s[0], (len+1)*sizeof(char))) {
+            casadi_warning("mxGetString returned NULL");
+            return false;
+          }
+          // Matlab silent failure; see #4034
+          if (s[0]=='\0' && len>0) {
+            casadi_warning("mxGetString failure, see https://github.com/casadi/casadi/issues/4034");
+            return false;
+          }
           **m = std::string(&s[0], len);
         }
         return true;
@@ -2464,7 +2508,7 @@ PyOS_setsig(SIGINT, SigIntHandler);
 
 %pythoncode%{
 try:
-  from numpy import pi, inf
+  from numpy import pi, inf, sum
 except:
   pass
 
@@ -2728,6 +2772,13 @@ class NZproxy:
       inputs.reverse()
     if not(hasattr(self,name)) or ('mul' in name):
       name = '__' + name + '__'
+    if method=="reduce" and name=="add":
+      assert len(inputs)==1
+      axis = kwargs["axis"]
+      if axis is None:
+          return inputs[0].sum()
+      else:
+          return inputs[0].sum(axis)
     try:
       assert method=="__call__"
       fun=getattr(self, name)
@@ -2906,6 +2957,11 @@ namespace casadi{
 }
 } // namespace casadi
 
+%include <casadi/core/generic_shared.hpp>
+
+%template(GenSharedObject) casadi::GenericShared<casadi::SharedObject, casadi::SharedObjectInternal>;
+%template(GenWeakRef) casadi::GenericWeakRef<casadi::SharedObject, casadi::SharedObjectInternal>;
+
 %include <casadi/core/shared_object.hpp>
 %include <casadi/core/casadi_misc.hpp>
 %include <casadi/core/casadi_common.hpp>
@@ -2924,6 +2980,52 @@ namespace casadi{
 
     def __getstate__(self):
         return {"serialization": self.serialize()}
+  %}
+}
+%extend Matrix<SXElem> {
+  %pythoncode %{
+    def __setstate__(self, state):
+      ctx = _current_unpickle_context()
+      if not ctx:
+        raise Exception("Cannot unpickle SX objects without a casadi context. " +
+          "Use something like:\n"+
+          "with ca.global_unpickle_context(): \n"+
+          "  f_ref = pickle.load(open(filename,'rb'))")
+      ctx.decode(state)
+      self.__init__(ctx.unpack())
+
+    def __getstate__(self):
+      ctx = _current_pickle_context()
+      if not ctx:
+        raise Exception("Cannot pickle SX objects without a casadi context. " +
+          "Use something like:\n"+
+          "with ca.global_pickle_context(): \n"+
+          "  pickle.dump(f,open(filename,'wb'))")
+      ctx.pack(self)
+      return ctx.encode()
+  %}
+}
+%extend MX {
+  %pythoncode %{
+    def __setstate__(self, state):
+      ctx = _current_unpickle_context()
+      if not ctx:
+        raise Exception("Cannot unpickle MX objects without a casadi context. " +
+          "Use something like:\n"+
+          "with ca.global_unpickle_context(): \n"+
+          "  f_ref = pickle.load(open(filename,'rb'))")
+      ctx.decode(state)
+      self.__init__(ctx.unpack())
+
+    def __getstate__(self):
+      ctx = _current_pickle_context()
+      if not ctx:
+        raise Exception("Cannot pickle MX objects without a casadi context. " +
+          "Use something like:\n"+
+          "with ca.global_pickle_context(): \n"+
+          "  pickle.dump(f,open(filename,'wb'))")
+      ctx.pack(self)
+      return ctx.encode()
   %}
 }
 
@@ -3092,14 +3194,40 @@ SPARSITY_INTERFACE_FUN(DECL, (FLAG | IS_SX), Matrix<SXElem>)
   %define SPARSITY_INTERFACE_FUN(DECL, FLAG, M)
     SPARSITY_INTERFACE_FUN_BASE(DECL, FLAG, M)
     #if FLAG & IS_MEMBER
-     DECL casadi_int casadi_length(const M &v) {
-      return std::max(v.size1(), v.size2());
-     }
+      DECL casadi_int casadi_length(const M &v) {
+        return std::max(v.size1(), v.size2());
+      }
+      DECL M casadi_sum(const M& x, casadi_int dim) {
+        if (dim==1) return sum1(x);
+        if (dim==2) return sum2(x);
+        casadi_error(
+          "Expected sum(A,1), sum(A,2), sum(A,\"all\") got " + casadi::str(dim) + " instead.");
+      }
+      DECL M casadi_sum(const M& x, const std::string& dim) {
+        casadi_assert(dim=="all",
+          "Expected sum(...,'all'), got '" + dim + "' instead.");
+        return sum(x);
+      }
+      DECL M casadi_sum(const M& x) {
+        if (x.is_vector()) return sum(x);
+        return sum1(x);
+      }
     #endif
   %enddef
 #else
   %define SPARSITY_INTERFACE_FUN(DECL, FLAG, M)
     SPARSITY_INTERFACE_FUN_BASE(DECL, FLAG, M)
+    #if FLAG & IS_MEMBER
+      DECL M casadi_sum(const M& x, casadi_int dim) {
+        if (dim==0) return sum1(x);
+        if (dim==1) return sum2(x);
+        casadi_error(
+          "Expected sum(A,1), sum(A,2), sum(A,\"all\") got " + casadi::str(dim) + " instead.");
+      }
+      DECL M casadi_sum(const M& x) {
+        return sum(x);
+      }
+    #endif
   %enddef
 #endif
 
@@ -3257,6 +3385,18 @@ DECL bool casadi_depends_on(const M& f, const M& arg) {
   return depends_on(f, arg);
 }
 
+DECL bool casadi_contains(const std::vector<M>& v, const M& n) {
+  return contains(v, n);
+}
+
+DECL bool casadi_contains_all(const std::vector<M>& v, const std::vector<M>& n) {
+  return contains_all(v, n);
+}
+
+DECL bool casadi_contains_any(const std::vector<M>& v, const std::vector<M>& n) {
+  return contains_any(v, n);
+}
+
 DECL M casadi_solve(const M& A, const M& b) {
   return solve(A, b);
 }
@@ -3288,7 +3428,7 @@ DECL M casadi_jacobian(const M &ex, const M &arg, const Dict& opts=Dict()) {
   return jacobian(ex, arg, opts);
 }
 
-DECL M casadi_jtimes(const M& ex, const M& arg, const M& v, bool tr=false) {
+DECL M casadi_jtimes(const M& ex, const M& arg, const M& v, bool tr=false, const Dict& opts=Dict()) {
   return jtimes(ex, arg, v, tr);
 }
 
@@ -3313,12 +3453,12 @@ DECL bool casadi_is_quadratic(const M& expr, const M& var) {
   return is_quadratic(expr, var);
 }
 
-DECL M casadi_gradient(const M &ex, const M &arg) {
-  return gradient(ex, arg);
+DECL M casadi_gradient(const M &ex, const M &arg, const Dict& opts=Dict()) {
+  return gradient(ex, arg, opts);
 }
 
-DECL M casadi_tangent(const M &ex, const M &arg) {
-  return tangent(ex, arg);
+DECL M casadi_tangent(const M &ex, const M &arg, const Dict& opts=Dict()) {
+  return tangent(ex, arg, opts);
 }
 
 DECL M casadi_hessian(const M& ex, const M& arg, M& OUTPUT1, const casadi::Dict& opts = casadi::Dict()) {
@@ -3365,6 +3505,19 @@ DECL M casadi_mmax(const M& x) { return mmax(x); }
 DECL casadi::DM casadi_evalf(const M& x) {
   return evalf(x);
 }
+DECL void casadi_separate_linear(const M &expr,
+      const M &sym_lin, const M &sym_const,
+      M& OUTPUT1, M& OUTPUT2, M& OUTPUT3) {
+  separate_linear(expr, sym_lin, sym_const, OUTPUT1, OUTPUT2, OUTPUT3);
+}
+DECL void casadi_separate_linear(const M &expr,
+  const std::vector<M> &sym_lin, const std::vector<M> &sym_const,
+  M& OUTPUT1, M& OUTPUT2, M& OUTPUT3) {
+separate_linear(expr, sym_lin, sym_const, OUTPUT1, OUTPUT2, OUTPUT3);
+}
+#endif // FLAG & IS_MEMBER
+
+#if FLAG & IS_GLOBAL
 DECL std::vector<M> casadi_cse(const std::vector<M>& e) {
   return cse(e);
 }
@@ -3372,9 +3525,23 @@ DECL M casadi_cse(const M& e) {
   return cse(e);
 }
 
-#endif // FLAG & IS_MEMBER
+DECL void casadi_extract_parametric(const M &expr, const M& par,
+        M& OUTPUT1, std::vector<M>& OUTPUT2, std::vector<M>& OUTPUT3, const Dict& opts=Dict()) {
+  extract_parametric(expr, par, OUTPUT1, OUTPUT2, OUTPUT3, opts);
+}
+DECL void casadi_extract_parametric(const M &expr, const std::vector<M>& par,
+        M& OUTPUT1, std::vector<M>& OUTPUT2, std::vector<M>& OUTPUT3, const Dict& opts=Dict()) {
+  extract_parametric(expr, par, OUTPUT1, OUTPUT2, OUTPUT3, opts);
+}
+DECL void casadi_extract_parametric(const std::vector<M> &expr, const M& par,
+        std::vector<M>& OUTPUT1, std::vector<M>& OUTPUT2, std::vector<M>& OUTPUT3, const Dict& opts=Dict()) {
+  extract_parametric(expr, par, OUTPUT1, OUTPUT2, OUTPUT3, opts);
+}
+DECL void casadi_extract_parametric(const std::vector<M> &expr, const std::vector<M>& par,
+        std::vector<M>& OUTPUT1, std::vector<M>& OUTPUT2, std::vector<M>& OUTPUT3, const Dict& opts=Dict()) {
+  extract_parametric(expr, par, OUTPUT1, OUTPUT2, OUTPUT3, opts);
+}
 
-#if FLAG & IS_GLOBAL
 DECL std::vector<std::vector< M > >
 casadi_forward(const std::vector< M > &ex, const std::vector< M > &arg,
                const std::vector<std::vector< M > > &v,
@@ -3694,6 +3861,9 @@ DECL M casadi_stop_diff(const M& expr, casadi_int order) {
 DECL M casadi_stop_diff(const M& expr, const M& var, casadi_int order) {
   return stop_diff(expr, var, order);
 }
+DECL std::vector< M > casadi_difference(const std::vector< M >& a, const std::vector< M >& b) {
+  return difference(a, b);
+}
 DECL M casadi_no_hess(const M& expr) {
   return no_hess(expr);
 }
@@ -3730,6 +3900,11 @@ namespace casadi{
   }
 
 }
+
+#ifdef SWIGPYTHON
+  %feature("nothread") casadi::Matrix<double>::full;
+  %feature("nothread") casadi::Matrix<double>::sparse;
+#endif
 
 // Extend DM with SWIG unique features
 namespace casadi{
@@ -4127,29 +4302,6 @@ namespace casadi{
         self = builtin('subsasgn',self,s,v);
       end
     end
-    function out = sum(self,varargin)
-      narginchk(1,3);
-      if nargin==1
-        if is_vector(self)
-          if is_column(self)
-            out = sum1(self);
-          else
-            out = sum2(self);
-          end
-        else
-          out = sum1(self);
-        end
-      else
-        i = varargin{1};
-        if i==1
-          out = sum1(self);
-        elseif i==2
-          out = sum2(self);
-        else
-          error('sum argument (if present) must be 1 or 2');
-        end
-      end
-    end
     function out = norm(self,varargin)
       narginchk(1,2);
       % 2-norm by default
@@ -4256,6 +4408,7 @@ namespace casadi{
 %include <casadi/core/dple.hpp>
 %include <casadi/core/expm.hpp>
 %include <casadi/core/interpolant.hpp>
+%include <casadi/core/blazing_spline.hpp>
 
 %feature("copyctor", "0") casadi::CodeGenerator;
 %include <casadi/core/code_generator.hpp>
@@ -4279,6 +4432,7 @@ namespace casadi {
   %extend MX {
     MX_ALL(static inline, IS_MEMBER)
     const MX brace(const casadi::MX& rr) const { casadi::MX m; $self->get_nz(m, true, rr); return m;}
+    void brace_asgn(const MX& m, const casadi::MX& rr) { $self->set_nz(m, true, rr); }
     const MX paren(const casadi::MX& rr) const {
       casadi::MX m;
       $self->get(m, true, rr);
@@ -4298,6 +4452,22 @@ namespace casadi {
       casadi::MX m;
       $self->get(m, true, rr, cc);
       return m;
+    }
+    /*
+    Not yet implemeted in core
+    set(const MX& m, bool ind1, const MX&, const MX&); does not seem to exist
+    void paren_asgn(const MX& m, char rr, const casadi::MX& cc) {
+      $self->set(m, true, casadi::char2Slice(rr), cc);
+    }
+    void paren_asgn(const MX& m, const casadi::MX& rr, char cc) {
+      $self->set(m, true, rr, casadi::char2Slice(cc));
+    }
+    void paren_asgn(const MX& m, const casadi::MX& rr, const casadi::MX& cc) {
+      $self->set(m, true, rr, cc);
+    }*/
+    // Needed for brace syntax to access nonzeros
+    casadi_int numel(const MX &k) const {
+      return 1;
     }
   }
 } // namespace casadi
@@ -4431,13 +4601,23 @@ namespace casadi {
 %include <casadi/core/importer.hpp>
 %include <casadi/core/callback.hpp>
 %include <casadi/core/global_options.hpp>
+
 %include <casadi/core/casadi_meta.hpp>
+#ifdef SWIGPYTHON
+%extend casadi::CasadiMeta {
+  static const char* swig_flags() { return CASADI_SWIG_FLAGS; }
+};
+#endif // SWIGPYTHON
+
 %include <casadi/core/integration_tools.hpp>
 %include <casadi/core/nlp_tools.hpp>
 %include <casadi/core/tools.hpp>
 %include <casadi/core/nlp_builder.hpp>
 %include <casadi/core/dae_builder.hpp>
 %include <casadi/core/xml_file.hpp>
+%include <casadi/core/archiver.hpp>
+%include <casadi/core/filesystem.hpp>
+%include <casadi/core/options.hpp>
 
 %feature("copyctor", "0") casadi::SerializerBase;
 %feature("copyctor", "0") casadi::DeserializerBase;
@@ -4470,6 +4650,39 @@ namespace casadi {
       return f()
   %}
 }
+%pythoncode %{
+
+try:
+  import threading
+  _thread_local = threading.local()
+except:
+  threading_available = True
+  _thread_local = globals()
+
+def _current_pickle_context():
+  return getattr(_thread_local, "casadi_pickle_ctx", None)
+
+def _current_unpickle_context():
+  return getattr(_thread_local, "casadi_unpickle_ctx", None)
+
+class global_pickle_context:
+    def __enter__(self):
+        self.ctx = StringSerializer()
+        _thread_local.casadi_pickle_ctx = self.ctx
+        return self.ctx
+
+    def __exit__(self, *args):
+        _thread_local.casadi_pickle_ctx = None
+      
+class global_unpickle_context:
+    def __enter__(self):
+        self.ctx = StringDeserializer("")
+        _thread_local.casadi_unpickle_ctx = self.ctx
+        return self.ctx
+
+    def __exit__(self, *args):
+        _thread_local.casadi_unpickle_ctx = None  
+%}
 #endif // SWIGPYTHON
 #ifdef SWIGMATLAB
 %extend casadi::DeserializerBase {
@@ -4534,6 +4747,10 @@ make_property_opti(ubg)
 make_property_opti(nx)
 make_property_opti(np)
 make_property_opti(ng)
+make_property_opti(x_linear_scale)
+make_property_opti(x_linear_scale_offset)
+make_property_opti(g_linear_scale)
+make_property_opti(f_linear_scale)
 
 make_property(casadi::Opti, casadi_solver);
 %define opti_metadata_modifiers(class)
@@ -4549,7 +4766,7 @@ make_property(casadi::Opti, casadi_solver);
             frame = sys._getframe(1)
         except:
             frame = {}
-        meta = {} if frame is None else {"stacktrace": {"file":os.path.abspath(frame.f_code.co_filename),"line":frame.f_lineno,"name":frame.f_code.co_name}}
+        meta = {} if frame is None else {"stacktrace": [{"file":os.path.abspath(frame.f_code.co_filename),"line":frame.f_lineno,"name":frame.f_code.co_name}]}
         ret = self._parameter(*args)
         if len(meta)>0:
             self.update_user_dict(ret, meta)
@@ -4562,7 +4779,7 @@ make_property(casadi::Opti, casadi_solver);
             frame = sys._getframe(1)
         except:
             frame = {}
-        meta = {} if frame is None else {"stacktrace": {"file":os.path.abspath(frame.f_code.co_filename),"line":frame.f_lineno,"name":frame.f_code.co_name}}
+        meta = {} if frame is None else {"stacktrace": [{"file":os.path.abspath(frame.f_code.co_filename),"line":frame.f_lineno,"name":frame.f_code.co_name}]}
         ret = self._variable(*args)
         if len(meta)>0:
             self.update_user_dict(ret, meta)
@@ -4573,14 +4790,27 @@ make_property(casadi::Opti, casadi_solver);
           return self._subject_to()
         import sys
         import os
-        try:
-            frame = sys._getframe(1)
-        except:
-            frame = {}
-        meta = {} if frame is None else {"stacktrace": {"file":os.path.abspath(frame.f_code.co_filename),"line":frame.f_lineno,"name":frame.f_code.co_name}}
+        stacktrace = []
+        for i in range(1,10000):
+          try:
+            frame = sys._getframe(i)
+            stacktrace.append({"file":os.path.abspath(frame.f_code.co_filename),"line":frame.f_lineno,"name":frame.f_code.co_name})
+          except Exception as e:
+            break
+        args = list(args)
+        if len(args)==3 and isinstance(args[2],dict):
+          args[2] = dict(args[2])
+          if "stacktrace" not in args[2]:
+            args[2]["stacktrace"] = stacktrace
+        elif len(args)==2 and isinstance(args[1],dict):
+          args[1] = dict(args[1])
+          if "stacktrace" not in args[1]:
+            args[1]["stacktrace"] = stacktrace
+        elif len(args)==1:
+          args = [args[0], {"stacktrace": stacktrace}]
+        elif len(args)==2:
+          args = [args[0], args[1], {"stacktrace": stacktrace}]
         ret = self._subject_to(*args)
-        if len(meta)>0:
-            self.update_user_dict(args[0], meta)
         return ret
     %}
   }
@@ -4601,7 +4831,7 @@ opti_metadata_modifiers(casadi::Opti);
       function out = variable(self, varargin)
         st = dbstack('-completenames',1);
         if length(st)>0
-          meta = struct('stacktrace', st(1));
+          meta = struct('stacktrace', {num2cell(st)});
         else
           meta = struct;
         end
@@ -4611,7 +4841,7 @@ opti_metadata_modifiers(casadi::Opti);
       function out = parameter(self, varargin)
         st = dbstack('-completenames',1);
         if length(st)>0
-          meta = struct('stacktrace', st(1));
+          meta = struct('stacktrace', {num2cell(st)});
         else
           meta = struct;
         end
@@ -4625,7 +4855,7 @@ opti_metadata_modifiers(casadi::Opti);
         end
         st = dbstack('-completenames',1);
         if length(st)>0
-          meta = struct('stacktrace', st(1));
+          meta = struct('stacktrace', {num2cell(st)});
         else
           meta = struct;
         end
@@ -4681,6 +4911,8 @@ opti_metadata_modifiers(casadi::Opti)
   %}
 }
 #endif
+
+%include <casadi/core/resource.hpp>
 
 // Cleanup for dependent modules
 %exception {

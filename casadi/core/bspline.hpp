@@ -59,6 +59,16 @@ namespace casadi {
     static casadi_int get_coeff_size(casadi_int m, const std::vector<casadi_int>& offset,
       const std::vector<casadi_int>& degree);
 
+    template<class M>
+    static M derivative_coeff(casadi_int i,
+        const std::vector<double>& knots,
+        const std::vector<casadi_int>& offset,
+        const std::vector<casadi_int>& degree,
+        const std::vector<casadi_int>& coeffs_dims,
+        const M& coeffs,
+        std::vector< std::vector<double> >& new_knots,
+        std::vector<casadi_int>& new_degree);
+
     std::vector<double> knots_;
     std::vector<casadi_int> offset_;
     std::vector<casadi_int> degree_;
@@ -77,6 +87,11 @@ namespace casadi {
 
         \identifier{1ye} */
     mutable MX jac_cache_;
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    /// Mutex for thread safety
+    mutable std::mutex jac_cache_mtx_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
     virtual MX jac_cached() const = 0;
 
@@ -122,21 +137,21 @@ namespace casadi {
         \identifier{1ym} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Generate code for the operation
 
         \identifier{1yn} */
     virtual std::string generate(CodeGenerator& g,
-                  const std::vector<casadi_int>& arg) const = 0;
+                  const std::vector<casadi_int>& arg,
+                  const std::vector<bool>& arg_is_ref) const = 0;
 
     /** \brief Deserialize without type information
 
         \identifier{1yo} */
     static MXNode* deserialize(DeserializingStream& s);
-
-    template<class M>
-    M derivative_coeff(casadi_int i, const M& coeffs) const;
 
     template<class T>
     MX jac(const MX& x, const T& coeffs) const;
@@ -195,7 +210,8 @@ namespace casadi {
 
         \identifier{1ys} */
     std::string generate(CodeGenerator& g,
-                  const std::vector<casadi_int>& arg) const override;
+                  const std::vector<casadi_int>& arg,
+                  const std::vector<bool>& arg_is_ref) const override;
 
     /** \brief  Print expression
 
@@ -270,7 +286,8 @@ namespace casadi {
 
         \identifier{1yy} */
     std::string generate(CodeGenerator& g,
-                  const std::vector<casadi_int>& arg) const override;
+                  const std::vector<casadi_int>& arg,
+                  const std::vector<bool>& arg_is_ref) const override;
 
     /** \brief  Print expression
 

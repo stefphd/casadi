@@ -31,6 +31,19 @@
 /// \cond INTERNAL
 namespace casadi {
 
+  class OracleFunction;
+
+  class CASADI_EXPORT OracleCallback {
+    public:
+      std::string name;
+      OracleFunction* oracle_;
+      OracleCallback(const std::string& name, OracleFunction* oracle);
+      OracleCallback();
+  };
+
+  template<typename T1>
+  int calc_function(const OracleCallback* cb, casadi_oracle_data<T1>* d);
+
   /** \brief Function memory with temporary work vectors
 
       \identifier{b} */
@@ -51,6 +64,8 @@ namespace casadi {
     double** res;
     casadi_int* iw;
     double* w;
+
+    casadi_oracle_data<double> d_oracle;
 
     std::vector<LocalOracleMemory*> thread_local_mem;
     ~OracleMemory();
@@ -93,6 +108,10 @@ namespace casadi {
 
     // Memory stride in case of multipel threads
     size_t stride_arg_, stride_res_, stride_iw_, stride_w_;
+
+    // Expand after construction?
+    // Only used in finalize -> no need to serialize
+    bool post_expand_;
 
   public:
     /** \brief  Constructor
@@ -230,6 +249,16 @@ namespace casadi {
     /// Get all statistics
     Dict get_stats(void* mem) const override;
 
+    /** \brief Generate code for the function body
+
+        \identifier{27q} */
+    virtual void codegen_body_enter(CodeGenerator& g) const;
+
+    /** \brief Generate code for the function body
+
+        \identifier{27r} */
+    virtual void codegen_body_exit(CodeGenerator& g) const;
+
     /** \brief Serialize an object without type information
 
         \identifier{r} */
@@ -242,6 +271,19 @@ namespace casadi {
     explicit OracleFunction(DeserializingStream& s);
 
   };
+
+  template<typename T1>
+  int calc_function(const OracleCallback* cb, casadi_oracle_data<T1>* d) {
+    OracleMemory* m = static_cast<OracleMemory*>(d->m);
+    try {
+      return cb->oracle_->calc_function(m, cb->name);
+    }
+    catch (const std::exception& e) {
+      uerr() << e.what() << std::endl;
+      return 1;
+    }
+  }
+
 
 } // namespace casadi
 

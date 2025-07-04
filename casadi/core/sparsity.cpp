@@ -28,6 +28,7 @@
 #include "im.hpp"
 #include "casadi_misc.hpp"
 #include "serializing_stream.hpp"
+#include "filesystem_impl.hpp"
 #include <climits>
 
 #define CASADI_THROW_ERROR(FNAME, WHAT) \
@@ -872,6 +873,11 @@ namespace casadi {
     // Hash the pattern
     std::size_t h = hash_sparsity(nrow, ncol, colind, row);
 
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    // Safe access to CachingMap
+    std::lock_guard<std::mutex> lock(cachingmap_mtx);
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
+
     // Get a reference to the cache
     CachingMap& cache = getCache();
 
@@ -890,11 +896,14 @@ namespace casadi {
         // Get a weak reference to the cached sparsity pattern
         WeakRef& wref = i->second;
 
+        // Reference to the cached pattern
+        SharedObject ref_shared;
+
         // Check if the pattern still exists
-        if (wref.alive()) {
+        if (wref.shared_if_alive(ref_shared)) {
 
           // Get an owning reference to the cached pattern
-          Sparsity ref = shared_cast<Sparsity>(wref.shared());
+          Sparsity ref = shared_cast<Sparsity>(ref_shared);
 
           // Check if the pattern matches
           if (ref.is_equal(nrow, ncol, colind, row)) {
@@ -913,10 +922,13 @@ namespace casadi {
           CachingMap::iterator j=i;
           j++; // Start at the next matching key
           for (; j!=eq.second; ++j) {
-            if (j->second.alive()) {
+
+            // Reference to the cached pattern
+            SharedObject ref_shared;
+            if (j->second.shared_if_alive(ref_shared)) {
 
               // Recover cached sparsity
-              Sparsity ref = shared_cast<Sparsity>(j->second.shared());
+              Sparsity ref = shared_cast<Sparsity>(ref_shared);
 
               // Match found if sparsity matches
               if (ref.is_equal(nrow, ncol, colind, row)) {
@@ -959,6 +971,10 @@ namespace casadi {
       }
     }
   }
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+  std::mutex Sparsity::cachingmap_mtx;
+#endif //CASADI_WITH_THREADSAFE_SYMBOLICS
 
   Sparsity Sparsity::tril(const Sparsity& x, bool includeDiagonal) {
     return x->_tril(includeDiagonal);
@@ -1286,7 +1302,12 @@ namespace casadi {
     return sprank(*this)!=size2();
   }
 
-  std::vector<casadi_int> Sparsity::compress() const {
+  std::vector<casadi_int> Sparsity::compress(bool canonical) const {
+    if (canonical) {
+      // fallback
+    } else if (is_dense()) {
+      return {size1(), size2(), 1};
+    }
     return (*this)->sp();
   }
 
@@ -1324,7 +1345,7 @@ namespace casadi {
     casadi_int ncol = v[1];
     const casadi_int *colind = v+2;
     if (colind[0]==1) {
-      // Dense matrix
+      // Dense matrix - deviation from canonical form
       return Sparsity::dense(nrow, ncol);
     }
     casadi_int nnz = colind[ncol];
@@ -1884,7 +1905,8 @@ namespace casadi {
   }
   void Sparsity::to_file(const std::string& filename, const std::string& format_hint) const {
     std::string format = file_format(filename, format_hint, file_formats);
-    std::ofstream out(filename);
+    std::ofstream out;
+    Filesystem::open(out, filename);
     if (format=="mtx") {
       out << std::scientific << std::setprecision(std::numeric_limits<double>::digits10 + 1);
       out << "%%MatrixMarket matrix coordinate pattern general" << std::endl;

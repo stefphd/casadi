@@ -39,4 +39,9 @@ namespace casadi {
   // By default, use zero-based indexing
   casadi_int GlobalOptions::start_index = 0;
 
+
+  bool GlobalOptions::julia_initialized = false;
+
+  casadi_int GlobalOptions::copy_elision_min_size = 8;
+
 } // namespace casadi

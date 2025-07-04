@@ -54,6 +54,11 @@ class CASADI_EXPORT External : public FunctionInternal {
       \identifier{1z2} */
   Importer li_;
 
+  /** \brief Initialize
+
+      \identifier{282} */
+  config_t config_;
+
   /** \brief Increase/decrease reference counter
 
       \identifier{1z3} */
@@ -87,12 +92,19 @@ class CASADI_EXPORT External : public FunctionInternal {
   std::vector<double> real_data_;
   std::string string_data_;
   ///@}
+
+  /** \brief Arguments as passed to init
+
+      \identifier{283} */
+  std::vector<std::string> config_args_;
+  std::vector<const char*> args_;
  public:
 
   /** \brief Constructor
 
       \identifier{1z9} */
-  External(const std::string& name, const Importer& li);
+  External(const std::string& name, const Importer& li,
+    const std::vector<std::string> config_args=std::vector<std::string>());
 
   /** \brief Destructor
 
@@ -260,7 +272,8 @@ class CASADI_EXPORT GenericExternal : public External {
   /** \brief Constructor
 
       \identifier{1zy} */
-  GenericExternal(const std::string& name, const Importer& li);
+  GenericExternal(const std::string& name, const Importer& li,
+    const std::vector<std::string> config_args=std::vector<std::string>());
 
   /** \brief  Destructor
 

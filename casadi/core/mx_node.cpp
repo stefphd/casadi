@@ -159,14 +159,35 @@ namespace casadi {
     *it++ = x;
   }
 
-  MX MXNode::join_primitives(std::vector<MX>::const_iterator& it) const {
-    MX ret = *it++;
+  void MXNode::split_primitives(const SX& x, std::vector<SX>::iterator& it) const {
+    *it++ = x;
+  }
+
+  void MXNode::split_primitives(const DM& x, std::vector<DM>::iterator& it) const {
+    *it++ = x;
+  }
+
+  template<typename T>
+  T MXNode::join_primitives_gen(typename std::vector<T>::const_iterator& it) const {
+    T ret = *it++;
     if (ret.size()==size()) {
       return ret;
     } else {
       casadi_assert_dev(ret.is_empty(true));
-      return MX(size());
+      return T(size());
     }
+  }
+
+  MX MXNode::join_primitives(std::vector<MX>::const_iterator& it) const {
+    return join_primitives_gen<MX>(it);
+  }
+
+  DM MXNode::join_primitives(std::vector<DM>::const_iterator& it) const {
+    return join_primitives_gen<DM>(it);
+  }
+
+  SX MXNode::join_primitives(std::vector<SX>::const_iterator& it) const {
+    return join_primitives_gen<SX>(it);
   }
 
   const std::string& MXNode::name() const {
@@ -205,12 +226,14 @@ namespace casadi {
   void MXNode::set_dep(const MX& dep) {
     dep_.resize(1);
     dep_[0] = dep;
+    check_dep();
   }
 
   void MXNode::set_dep(const MX& dep1, const MX& dep2) {
     dep_.resize(2);
     dep_[0] = dep1;
     dep_[1] = dep2;
+    check_dep();
   }
 
   void MXNode::set_dep(const MX& dep1, const MX& dep2, const MX& dep3) {
@@ -218,10 +241,22 @@ namespace casadi {
     dep_[0] = dep1;
     dep_[1] = dep2;
     dep_[2] = dep3;
+    check_dep();
   }
 
   void MXNode::set_dep(const std::vector<MX>& dep) {
     dep_ = dep;
+    check_dep();
+  }
+
+  void MXNode::check_dep() const {
+    for (const MX& e : dep_) {
+      if (e->has_output()) {
+        casadi_assert(is_output(),
+          "You cannot build an expression out of a MultipleOutput node. "
+          "You must select a concrete output by making a get_output() call.");
+      }
+    }
   }
 
   const Sparsity& MXNode::sparsity(casadi_int oind) const {
@@ -314,6 +349,40 @@ namespace casadi {
     casadi_error("'eval_mx' not defined for class " + class_name());
   }
 
+  void MXNode::eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const {
+    std::vector<MX> arg_sum(arg.size());
+    for (casadi_int i=0; i<arg.size(); ++i) {
+      arg_sum[i] = arg[i][0] + arg[i][1] + arg[i][2];
+    }
+    std::vector<MX> res_nonlin(res.size());
+    eval_mx(arg_sum, res_nonlin);
+    for (casadi_int i=0; i<res.size(); ++i) {
+      res[i][0] = MX::zeros(sparsity());
+      res[i][1] = MX::zeros(sparsity());
+      res[i][2] = res_nonlin[i];
+    }
+  }
+
+  void MXNode::eval_linear_rearrange(const std::vector<std::array<MX, 3> >& arg,
+    std::vector<std::array<MX, 3> >& res) const {
+    // Treat each category separately
+    for (casadi_int i=0; i<3; ++i) {
+      // Read arguments for categiry i
+      std::vector<MX> eval_arg(n_dep());
+      for (casadi_int j=0; j<n_dep(); ++j) {
+        eval_arg[j] = arg[j][i];
+      }
+      std::vector<MX> eval_res(nout());
+      // Normal symbolic evaluation
+      eval_mx(eval_arg, eval_res);
+      // Assign results
+      for (casadi_int j=0; j<nout(); ++j) {
+        res[j][i] = eval_res[j];
+      }
+    }
+  }
+
   void MXNode::ad_forward(const std::vector<std::vector<MX> >& fseed,
                        std::vector<std::vector<MX> >& fsens) const {
     casadi_error("'ad_forward' not defined for class " + class_name());
@@ -375,12 +444,34 @@ namespace casadi {
   }
 
   void MXNode::generate(CodeGenerator& g,
-      const std::vector<casadi_int>& arg, const std::vector<casadi_int>& res) const {
+      const std::vector<casadi_int>& arg,
+      const std::vector<casadi_int>& res,
+      const std::vector<bool>& arg_is_ref,
+      std::vector<bool>& res_is_ref) const {
     casadi_warning("Cannot code generate MX nodes of type " + class_name() +
                    "The generation will proceed, but compilation of the code will "
                    "not be possible.");
     g << "#error " <<  class_name() << ": " << arg << " => " << res << '\n';
   }
+
+  void MXNode::generate_copy(CodeGenerator& g,
+                      const std::vector<casadi_int>& arg,
+                      const std::vector<casadi_int>& res,
+                      const std::vector<bool>& arg_is_ref,
+                      std::vector<bool>& res_is_ref,
+                      casadi_int i) const {
+    res_is_ref[i] = arg_is_ref[i];
+    if (arg[i]==res[i]) return;
+    if (nnz()==1) {
+      g << g.workel(res[i]) << " = " << g.workel(arg[i]) << ";\n";
+    } else if (arg_is_ref[i]) {
+      g << g.work(res[i], nnz(), true) << " = " << g.work(arg[i], nnz(), true) << ";\n";
+    } else {
+      g << g.copy(g.work(arg[i], nnz(), false), nnz(), g.work(res[i], nnz(), false)) << "\n";
+    }
+  }
+
+
 
   double MXNode::to_double() const {
     casadi_error("'to_double' not defined for class " + class_name());
@@ -800,7 +891,7 @@ namespace casadi {
             return _get_binary(OP_CONSTPOW, y, scX, scY);
           case OP_CONSTPOW:
             if (y->is_value(-1)) return get_unary(OP_INV);
-            else if (y->is_value(0)) return MX::ones(sparsity());
+            else if (y->is_value(0)) return MX::ones(size());
             else if (y->is_value(1)) return shared_from_this<MX>();
             else if (y->is_value(2)) return get_unary(OP_SQ);
             break;
@@ -856,7 +947,8 @@ namespace casadi {
     } else if (scY) {
       // Check if it is ok to loop over nonzeros only
       if (sparsity().is_dense() || operation_checker<F0XChecker>(op) ||
-          (y.is_zero() && operation_checker<F00Checker>(op))) {
+          (y.is_zero() && operation_checker<F00Checker>(op)) ||
+          (y.is_constant() && static_cast<double>(y)>0 && (op==OP_CONSTPOW || op==OP_POW))) {
         // Loop over nonzeros
         return MX::create(new BinaryMX<false, true>(Operation(op), shared_from_this<MX>(), y));
       } else {
@@ -964,6 +1056,7 @@ namespace casadi {
       } else if (sparsity().is_scalar()) {
         return get_binary(OP_MUL, y);
       } else {
+        if (shared_from_this<MX>().is_zero() || y.is_zero()) return 0;
         return MX::create(new Dot(shared_from_this<MX>(), y));
       }
     } else {

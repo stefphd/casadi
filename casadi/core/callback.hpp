@@ -168,6 +168,15 @@ namespace casadi {
         \identifier{og} */
     virtual bool uses_output() const;
 
+    /** \brief Customize calls to the function factory
+
+        \identifier{2de} */
+    virtual Function get_factory(const std::string& name,
+        const std::vector<std::string>& s_in,
+        const std::vector<std::string>& s_out,
+        const Function::AuxOut& aux,
+        const Dict& opts) const;
+
     ///@{
     /** \brief Return Jacobian of all input elements with respect to all output elements
 

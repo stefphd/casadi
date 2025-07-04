@@ -63,6 +63,14 @@ namespace casadi {
         \identifier{1dk} */
     void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const override;
 
+    /** \brief Evaluate the MX node on a const/linear/nonlinear partition
+
+        \identifier{2ck} */
+        void eval_linear(const std::vector<std::array<MX, 3> >& arg,
+            std::vector<std::array<MX, 3> >& res) const override {
+        eval_linear_rearrange(arg, res);
+    }
+
     /** \brief Calculate forward mode directional derivatives
 
         \identifier{1dl} */
@@ -95,7 +103,9 @@ namespace casadi {
         \identifier{1dq} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Get the operation
 
@@ -132,15 +142,31 @@ namespace casadi {
         \identifier{1dv} */
     void primitives(std::vector<MX>::iterator& it) const override;
 
+    /// Split up an expression along primitives (template)
+    template<typename T>
+    void split_primitives_gen(const T& x, typename std::vector<T>::iterator& it) const;
+
+    /// @{
     /** \brief Split up an expression along symbolic primitives
 
         \identifier{1dw} */
     void split_primitives(const MX& x, std::vector<MX>::iterator& it) const override;
+    void split_primitives(const SX& x, std::vector<SX>::iterator& it) const override;
+    void split_primitives(const DM& x, std::vector<DM>::iterator& it) const override;
+    /// @}
 
+    /// Join an expression along symbolic primitives (template)
+    template<typename T>
+    T join_primitives_gen(typename std::vector<T>::const_iterator& it) const;
+
+    /// @{
     /** \brief Join an expression along symbolic primitives
 
         \identifier{1dx} */
     MX join_primitives(std::vector<MX>::const_iterator& it) const override;
+    SX join_primitives(std::vector<SX>::const_iterator& it) const override;
+    DM join_primitives(std::vector<DM>::const_iterator& it) const override;
+    /// @}
 
     /** \brief Detect duplicate symbolic expressions
 

@@ -82,13 +82,26 @@ set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-DPy_USING_UNICODE")
 set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-noproxydel")
 set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-fastunpack")
 set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-modernargs")
+if(WITH_PYTHON_GIL_RELEASE)
+  set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-threads")
+  set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-DCASADI_WITH_PYTHON_GIL_RELEASE")
+endif()
 if("${PYTHON_VERSION_MAJOR}" STREQUAL "3")
 set(PYTHONFLAG "3")
 set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-py3")
 set(CMAKE_SWIG_FLAGS ${CMAKE_SWIG_FLAGS} "-DWITH_PYTHON3")
 endif()
 
-message("PYTHONFLAGS: ${CMAKE_SWIG_FLAGS} ${PYTHONFLAG}")
+if(WITH_PYTHON_GIL_RELEASE)
+  set(CMAKE_SWIG_NAME_SUFFIX "_gil_release")
+else()
+  set(CMAKE_SWIG_NAME_SUFFIX "")
+endif()
+
+# Main header files
+if(NOT SKIP_CONFIG_H_GENERATION)
+  configure_file(../swig_config.h.cmake "${CMAKE_CURRENT_BINARY_DIR}/swig_config.h" ESCAPE_QUOTES)
+endif()
 
 if(SWIG_EXPORT)
   set(CMAKE_SWIG_OUTDIR ${CMAKE_CURRENT_SOURCE_DIR}/target${PYTHONFLAG}/extra)
@@ -100,7 +113,7 @@ if(SWIG_EXPORT)
 endif()
 
 if(SWIG_IMPORT)
-  set(PYTHON_FILE ${CMAKE_CURRENT_SOURCE_DIR}/target${PYTHONFLAG}/source/casadiPYTHON_wrap.cxx)
+  set(PYTHON_FILE ${CMAKE_CURRENT_SOURCE_DIR}/target${PYTHONFLAG}/source/casadiPYTHON_wrap${CMAKE_SWIG_NAME_SUFFIX}.cxx)
   set_source_files_properties(${PYTHON_FILE}  PROPERTIES  CPLUSPLUS ON)
 else()
   # Generate SWIG wrapper
@@ -150,6 +163,10 @@ else()
   set(COMPILE_FLAGS)
 endif()
 
+if(MSVC)
+  set(COMPILE_FLAGS "${COMPILE_FLAGS} /bigobj")
+endif()
+
 message("COMPILE_FLAGS: ${COMPILE_FLAGS}")
 
 set_target_properties(_casadi PROPERTIES COMPILE_FLAGS "${COMPILE_FLAGS}")
@@ -191,14 +208,27 @@ install(FILES ${PROJECT_BINARY_DIR}/swig/python/casadi.py
 )
 endif()
 
-# Install Python tools
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tools
-  DESTINATION "${PYTHON_PREFIX}/casadi"
-  COMPONENT install_python
-  USE_SOURCE_PERMISSIONS
-  PATTERN .pyc EXCLUDE
-  PATTERN .svn EXCLUDE
-)
+if("${PYTHON_VERSION_MAJOR}" STREQUAL "3")
+  # Install Python tools
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tools
+    DESTINATION "${PYTHON_PREFIX}/casadi"
+    COMPONENT install_python
+    USE_SOURCE_PERMISSIONS
+    PATTERN .pyc EXCLUDE
+    PATTERN .svn EXCLUDE
+    PATTERN structure.py EXCLUDE
+  )
+else()
+  # Install Python tools
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/tools
+    DESTINATION "${PYTHON_PREFIX}/casadi"
+    COMPONENT install_python
+    USE_SOURCE_PERMISSIONS
+    PATTERN .pyc EXCLUDE
+    PATTERN .svn EXCLUDE
+    PATTERN structure3.py EXCLUDE
+  )
+endif()
 
 # Install Python package initialization
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py

@@ -58,6 +58,18 @@ namespace casadi {
     }
   }
 
+  MX Call::get_output(casadi_int oind) const {
+    MX this_ = shared_from_this<MX>();
+    // No need for an OutputNode if sparsity is fully sparse
+    if (this_->sparsity(oind).nnz()==0) return MX(this_->sparsity(oind));
+    MX ret;
+    if (!cache_.incache(oind, ret)) {
+      ret = MX::create(new OutputNode(this_, oind));
+      cache_.tocache_if_missing(oind, ret);
+    }
+    return ret;
+  }
+
   Call::Call(const Function& fcn, const std::vector<MX>& arg) : fcn_(fcn) {
 
     // Number inputs and outputs
@@ -166,18 +178,21 @@ namespace casadi {
     return fcn_->has_refcount_;
   }
 
-  void Call::generate(CodeGenerator& g, const std::vector<casadi_int>& arg,
-      const std::vector<casadi_int>& res) const {
+  void Call::generate(CodeGenerator& g,
+                    const std::vector<casadi_int>& arg,
+                    const std::vector<casadi_int>& res,
+                    const std::vector<bool>& arg_is_ref,
+                    std::vector<bool>& res_is_ref) const {
     // Collect input arguments
     g.local("arg1", "const casadi_real", "**");
     for (casadi_int i=0; i<arg.size(); ++i) {
-      g << "arg1[" << i << "]=" << g.work(arg[i], fcn_.nnz_in(i)) << ";\n";
+      g << "arg1[" << i << "]=" << g.work(arg[i], fcn_.nnz_in(i), arg_is_ref[i]) << ";\n";
     }
 
     // Collect output arguments
     g.local("res1", "casadi_real", "**");
     for (casadi_int i=0; i<res.size(); ++i) {
-      g << "res1[" << i << "]=" << g.work(res[i], fcn_.nnz_out(i)) << ";\n";
+      g << "res1[" << i << "]=" << g.work(res[i], fcn_.nnz_out(i), false) << ";\n";
     }
 
     // Call function
@@ -221,6 +236,10 @@ namespace casadi {
 
   std::vector<MX> Call::create(const Function& fcn, const std::vector<MX>& arg) {
     return MX::createMultipleOutput(new Call(fcn, arg));
+  }
+
+  MX Call::create_call(const Function& fcn, const std::vector<MX>& arg) {
+    return MX::create(new Call(fcn, arg));
   }
 
   void Call::serialize_body(SerializingStream& s) const {

@@ -29,6 +29,8 @@ import unittest
 from types import *
 from helpers import *
 import itertools
+import os
+import sys
 
 warnings.filterwarnings("ignore",category=DeprecationWarning)
 
@@ -439,6 +441,8 @@ class ADtests(casadiTestCase):
     y = MX.sym("y",2,2)
 
     f1 = Function("f1", [x,y],[x+y[0,0],mtimes(y,x)])
+    
+    f1_noninline = Function("f1", [x,y],[x+y[0,0],mtimes(y,x)],{"never_inline":True})
 
     f2 = Function("f2", [x,y],[mtimes(MX.zeros(0,2),x)])
 
@@ -521,6 +525,8 @@ class ADtests(casadiTestCase):
     xx = horzcat(sin(x),cos(x))
 
     for inputs,values,out, jac, with_sx, std in [
+          (in1,v1,c.sparsity_cast(x**2,sparsify(DM([[0,1],[1,0]])).sparsity()),2*c.sparsity_cast(x,sparsify(DM([[0,0],[1,0],[0,1],[0,0]])).sparsity()),True,"c89"),
+          (in1,v1,f1_noninline.call([x**2,y])[1],y*2*vertcat(*[x.T,x.T]),True,"c89"),
           (in1,[v1[0],DM([[1,1.5],[0,0.9]])],xx[y[:,0],:],blockcat([[0,cos(x[1])],[cos(x[0]),0],[0,-sin(x[1])],[-sin(x[0]),0]]),False,"c99"),
           (in1,[v1[0],DM([[1,1.5],[0,0.9]])],xx[:,y[:,0]],blockcat([[-sin(x[0]),0],[0,-sin(x[1])],[cos(x[0]),0],[0,cos(x[1])]]),False,"c99"),
           (in1,[v1[0],DM([[1,1.5],[0,0.9]])],xx[y[:,0],y[:,0]],blockcat([[0,-sin(x[1])],[-sin(x[0]),0],[0,cos(x[1])],[cos(x[0]),0]]),False,"c99"),
@@ -632,7 +638,7 @@ class ADtests(casadiTestCase):
           if "pow" in str(out) and os.name=='nt':
             pass # Known bug #3038
           else:
-            self.check_codegen(fun,inputs=values,std=std)
+            self.check_codegen(fun,inputs=values,std=std,digits=codegen_check_digits)
           self.check_serialize(fun,inputs=values)
 
           J_ = fun_out[1]
@@ -666,9 +672,9 @@ class ADtests(casadiTestCase):
                 aseeds = [[sym("a",spmod2(f.sparsity_out(i)))  for i in range(f.n_out())] for d in range(ndir)]
                 inputss = [sym("i",f.sparsity_in(i)) for i in range(f.n_in())]
 
-                res = f.call(inputss,True)
-                fwdsens = forward(res,inputss,fseeds,dict(always_inline=True))
-                adjsens = reverse(res,inputss,aseeds,dict(always_inline=True))
+                res = f.call(inputss,not f.is_a("SXFunction"))
+                fwdsens = forward(res,inputss,fseeds,dict(always_inline=not f.is_a("SXFunction")))
+                adjsens = reverse(res,inputss,aseeds,dict(always_inline=not f.is_a("SXFunction")))
 
                 fseed = [DM(fseeds[d][0].sparsity(),random.random(fseeds[d][0].nnz())) for d in range(ndir) ]
                 aseed = [DM(aseeds[d][0].sparsity(),random.random(aseeds[d][0].nnz())) for d in range(ndir) ]
@@ -692,7 +698,7 @@ class ADtests(casadiTestCase):
                 if "pow" in str(out) and os.name=='nt':
                   pass # Known bug #3038
                 else:
-                  self.check_codegen(vf,inputs=vf_in,std=std)
+                  self.check_codegen(vf,inputs=vf_in,std=std,digits=codegen_check_digits)
                 self.check_serialize(vf,inputs=vf_in)
 
                 offset = len(res)
@@ -721,7 +727,7 @@ class ADtests(casadiTestCase):
                 if "pow" in str(out) and os.name=='nt':
                   pass # Known bug #3038
                 else:
-                  self.check_codegen(vf,inputs=vf_in,std=std)
+                  self.check_codegen(vf,inputs=vf_in,std=std,digits=codegen_check_digits)
                 self.check_serialize(vf,inputs=vf_in)
                 storagekey = (spmod,spmod2)
                 if not(storagekey in storage):
@@ -743,9 +749,9 @@ class ADtests(casadiTestCase):
                   aseeds2 = [[sym2("a",vf_mx.sparsity_out(i))  for i in range(vf.n_out()) ] for d in range(ndir)]
                   inputss2 = [sym2("i",vf_mx.sparsity_in(i)) for i in range(vf.n_in())]
 
-                  res2 = vf.call(inputss2,True)
-                  fwdsens2 = forward(res2,inputss2,fseeds2,dict(always_inline=True))
-                  adjsens2 = reverse(res2,inputss2,aseeds2,dict(always_inline=True))
+                  res2 = vf.call(inputss2,not vf.is_a("SXFunction"))
+                  fwdsens2 = forward(res2,inputss2,fseeds2,dict(always_inline=not vf.is_a("SXFunction")))
+                  adjsens2 = reverse(res2,inputss2,aseeds2,dict(always_inline=not vf.is_a("SXFunction")))
 
                   if sym2 is MX.sym:
                       self.check_eval_mx([vvcat(e) for e in fwdsens2])
@@ -762,7 +768,7 @@ class ADtests(casadiTestCase):
                   if "pow" in str(out) and os.name=='nt':
                     pass # Known bug #3038
                   else:
-                    self.check_codegen(vf2,inputs=vf2_in,std=std)
+                    self.check_codegen(vf2,inputs=vf2_in,std=std,digits=codegen_check_digits)
                   self.check_serialize(vf2,inputs=vf2_in)
                   storagekey = (spmod,spmod2)
                   if not(storagekey in storage2):
@@ -790,7 +796,7 @@ class ADtests(casadiTestCase):
               if "pow" in str(out) and os.name=='nt':
                 pass # Known bug #3038
               else:
-                self.check_codegen(Jf,inputs=values,std=std)
+                self.check_codegen(Jf,inputs=values,std=std,digits=codegen_check_digits)
               self.check_serialize(Jf,inputs=values)
               self.checkarray(Jf_out[0],J_)
               self.checkarray(DM.ones(Jf.sparsity_out(0)),DM.ones(J_.sparsity()),str(out)+str(mode))
@@ -816,7 +822,7 @@ class ADtests(casadiTestCase):
               if "pow" in str(out) and os.name=='nt':
                 pass # Known bug #3038
               else:
-                self.check_codegen(Hf,inputs=values,std=std)
+                self.check_codegen(Hf,inputs=values,std=std,digits=codegen_check_digits)
               self.check_serialize(Hf,inputs=values)
               if H_ is None:
                 H_ = Hf_out[0]

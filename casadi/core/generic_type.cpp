@@ -185,7 +185,7 @@ namespace casadi {
       (is_string_vector() && to_string_vector().empty()) ||
       (is_string_vector_vector() && to_string_vector_vector().empty()) ||
       (is_bool_vector() && to_bool_vector().empty()) ||
-      (is_dict_vector() && to_dict_vector().empty()) ||
+      (is_dict_vector() && as_dict_vector().empty()) ||
       (is_vector_vector() && to_vector_vector().empty()) ||
       (is_vector() && to_vector().empty());
   }
@@ -523,6 +523,11 @@ namespace casadi {
   }
 
   std::vector<Dict> GenericType::to_dict_vector() const {
+    if (is_empty_vector()) return {};
+    if (is_dict()) {
+      Dict e = as_dict();
+      return std::vector<Dict>(1, e);
+    }
     casadi_assert(is_dict_vector(), "type mismatch");
     return as_dict_vector();
   }
@@ -802,6 +807,9 @@ namespace casadi {
         auto it = target.find(e.first);
         if (it!=target.end() && it->second.is_dict()) {
           Dict local = it->second;
+          casadi_assert(e.second.is_dict(),
+            "update_dict error: Key '" + it->first + "' exists in target, "
+            "but source value is not a dict");
           update_dict(local, e.second, recurse);
           it->second = local;
           continue;
@@ -811,6 +819,21 @@ namespace casadi {
     }
   }
 
+
+  void update_dict(Dict& target, const std::string& key,
+      const GenericType& value, bool recurse) {
+    auto it = target.find(key);
+    if (it==target.end()) {
+      target[key] = value;
+    } else {
+      // value.is_dict()
+      casadi_assert(it->second.is_dict() && value.is_dict(),
+        "update_dict error: Key '" + key + "' exists in target, but values are not dicts");
+      Dict orig = it->second;
+      update_dict(orig, value, recurse);
+      target[key] = orig;
+    }
+  }
 
 
 

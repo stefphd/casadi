@@ -42,19 +42,13 @@ namespace casadi {
   // IdasMemory
   struct CASADI_SUNDIALS_COMMON_EXPORT SundialsMemory : public IntegratorMemory {
     // N-vectors for the forward integration
-    N_Vector xz, xzdot, q;
+    N_Vector v_xz, v_xzdot, v_q;
 
     // N-vectors for the backward integration
-    N_Vector rxz, rxzdot, ruq;
+    N_Vector v_adj_xz, v_adj_xzdot, v_adj_pu;
 
     // Initialize or reinitialize?
     bool first_callB;
-
-    // Parameters
-    double *p, *rp;
-
-    // Controls
-    double *u;
 
     /// Jacobian memory blocks
     double *jac_ode_x, *jac_alg_x, *jac_ode_z, *jac_alg_z;
@@ -77,9 +71,6 @@ namespace casadi {
     /// Offsets for stats in backward integration
     long nstepsB_off, nfevalsB_off, nlinsetupsB_off, netfailsB_off;
     long nnitersB_off, nncfailsB_off;
-
-    // Temporaries for [x;z] or [rx;rz]
-    double *v1, *v2;
 
     /// number of checkpoints stored so far
     int ncheck;
@@ -134,7 +125,8 @@ namespace casadi {
 
     // DAE right-hand-side, forward problem
     int calc_daeB(SundialsMemory* m, double t, const double* x, const double* z,
-      const double* rx, const double* rz, const double* rp, double* adj_x, double* adj_z) const;
+      const double* adj_ode, const double* adj_alg, const double* adj_quad,
+      double* adj_x, double* adj_z) const;
 
     // Quadrature right-hand-side, forward problem
     int calc_quadF(SundialsMemory* m, double t, const double* x, const double* z,
@@ -142,7 +134,7 @@ namespace casadi {
 
     // Quadrature right-hand-side, backward problem
     int calc_quadB(SundialsMemory* m, double t, const double* x, const double* z,
-      const double* rx, const double* rz, double* adj_p, double* adj_u) const;
+      const double* adj_ode, const double* adj_alg, double* adj_p, double* adj_u) const;
 
     // Jacobian of DAE-times-vector function, forward problem
     int calc_jtimesF(SundialsMemory* m, double t, const double* x, const double* z,
@@ -158,16 +150,15 @@ namespace casadi {
     /** \brief  Print solver statistics */
     void print_stats(IntegratorMemory* mem) const override;
 
-    /** \brief  Reset the forward problem and bring the time back to t0 */
-    void reset(IntegratorMemory* mem, const double* x,
-      const double* z, const double* p) const override;
+    /** \brief  Reset the forward solver at the start or after an event */
+    void reset(IntegratorMemory* mem, bool first_call) const override;
 
     /** \brief  Reset the backward problem and take time to tf */
     void resetB(IntegratorMemory* mem) const override;
 
     /** \brief Introduce an impulse into the backwards integration at the current time */
     void impulseB(IntegratorMemory* mem,
-      const double* rx, const double* rz, const double* rp) const override;
+      const double* adj_x, const double* adj_z, const double* adj_q) const override;
 
     /** \brief Reset stats */
     void reset_stats(SundialsMemory* m) const;

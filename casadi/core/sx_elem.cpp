@@ -32,6 +32,8 @@
 #include "symbolic_sx.hpp"
 #include "unary_sx.hpp"
 #include "binary_sx.hpp"
+#include "call_sx.hpp"
+#include "output_sx.hpp"
 #include "global_options.hpp"
 #include "sx_function.hpp"
 
@@ -42,6 +44,11 @@ namespace casadi {
   // Allocate storage for the caching
   CACHING_MAP<casadi_int, IntegerSX*> IntegerSX::cached_constants_;
   CACHING_MAP<double, RealtypeSX*> RealtypeSX::cached_constants_;
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+  std::mutex IntegerSX::mutex_cached_constants;
+  std::mutex RealtypeSX::mutex_cached_constants;
+#endif //CASADI_WITH_THREADSAFE_SYMBOLICS
 
   SXElem::SXElem() {
     node = casadi_limits<SXElem>::nan.node;
@@ -393,6 +400,11 @@ namespace casadi {
     return BinarySX::create(Operation(op), x, y);
   }
 
+  std::vector<SXElem> SXElem::call(const Function& f, const std::vector<SXElem>& deps) {
+    SXElem c = CallSX::create(f, deps);
+    return OutputSX::split(c, f.nnz_out());
+  }
+
   SXElem SXElem::unary(casadi_int op, const SXElem& x) {
     // Simplifications
     if (GlobalOptions::simplification_on_the_fly) {
@@ -444,6 +456,26 @@ namespace casadi {
 
   bool SXElem::is_constant() const {
     return node->is_constant();
+  }
+
+  bool SXElem::is_call() const {
+    return node->is_call();
+  }
+
+  bool SXElem::is_output() const {
+    return node->is_output();
+  }
+
+  bool SXElem::has_output() const {
+    return node->has_output();
+  }
+
+  Function SXElem::which_function() const {
+    return node->which_function();
+  }
+
+  casadi_int SXElem::which_output() const {
+    return node->which_output();
   }
 
   bool SXElem::is_integer() const {
@@ -524,12 +556,16 @@ namespace casadi {
   }
 
   SXElem SXElem::dep(casadi_int ch) const {
-    casadi_assert_dev(ch==0 || ch==1);
+    casadi_assert_dev(ch >= 0 || ch < n_dep());
     return node->dep(ch);
   }
 
   casadi_int SXElem::n_dep() const {
     return node->n_dep();
+  }
+
+  SXElem SXElem::get_output(casadi_int oind) const {
+    return node->get_output(oind);
   }
 
   casadi_int SXElem::__hash__() const {
@@ -623,6 +659,10 @@ namespace casadi {
   SXElem SXElem::deserialize(DeserializingStream& s) {
     return SXElem::create(SXNode::deserialize(s));
   }
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+  std::mutex SXElem::mutex_temp;
+#endif //CASADI_WITH_THREADSAFE_SYMBOLICS
 
 } // namespace casadi
 

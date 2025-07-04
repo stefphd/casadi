@@ -88,6 +88,20 @@ namespace casadi {
     res[0] = mac(arg[1], arg[2], arg[0]);
   }
 
+  void Multiplication::eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const {
+    const std::array<MX, 3>& x = arg[1];
+    const std::array<MX, 3>& y = arg[2];
+    const std::array<MX, 3>& z = arg[0];
+    std::array<MX, 3>& f = res[0];
+    f[0] = mac(x[0], y[0], z[0]);
+    f[1] = mac(x[0], y[1], z[1]);
+    f[1] = mac(x[1], y[0], f[1]);
+    f[2] = mac(x[1]+x[2], y[1]+y[2], z[2]);
+    f[2] = mac(x[2], y[0], f[2]);
+    f[2] = mac(x[0], y[2], f[2]);
+  }
+
   int Multiplication::
   sp_forward(const bvec_t** arg, bvec_t** res, casadi_int* iw, bvec_t* w) const {
     copy_fwd(arg[0], res[0], nnz());
@@ -108,39 +122,47 @@ namespace casadi {
 
   void Multiplication::generate(CodeGenerator& g,
                                 const std::vector<casadi_int>& arg,
-                                const std::vector<casadi_int>& res) const {
+                                const std::vector<casadi_int>& res,
+                                const std::vector<bool>& arg_is_ref,
+                                std::vector<bool>& res_is_ref) const {
     // Copy first argument if not inplace
-    if (arg[0]!=res[0]) {
-      g << g.copy(g.work(arg[0], nnz()), nnz(), g.work(res[0], nnz())) << '\n';
+    if (arg[0]!=res[0] || arg_is_ref[0]) {
+      g << g.copy(g.work(arg[0], nnz(), arg_is_ref[0]),
+            nnz(),
+            g.work(res[0], nnz(), false)) << '\n';
     }
 
     // Perform sparse matrix multiplication
-    g << g.mtimes(g.work(arg[1], dep(1).nnz()), dep(1).sparsity(),
-                          g.work(arg[2], dep(2).nnz()), dep(2).sparsity(),
-                          g.work(res[0], nnz()), sparsity(), "w", false) << '\n';
+    g << g.mtimes(g.work(arg[1], dep(1).nnz(), arg_is_ref[1]), dep(1).sparsity(),
+                          g.work(arg[2], dep(2).nnz(), arg_is_ref[2]), dep(2).sparsity(),
+                          g.work(res[0], nnz(), false), sparsity(), "w", false) << '\n';
   }
 
   void DenseMultiplication::
   generate(CodeGenerator& g,
-           const std::vector<casadi_int>& arg, const std::vector<casadi_int>& res) const {
+           const std::vector<casadi_int>& arg,
+           const std::vector<casadi_int>& res,
+           const std::vector<bool>& arg_is_ref,
+           std::vector<bool>& res_is_ref) const {
     // Copy first argument if not inplace
-    if (arg[0]!=res[0]) {
-      g << g.copy(g.work(arg[0], nnz()), nnz(),
-                          g.work(res[0], nnz())) << '\n';
+    if (arg[0]!=res[0] || arg_is_ref[0]) {
+      g << g.copy(g.work(arg[0], nnz(), arg_is_ref[0]), nnz(),
+                          g.work(res[0], nnz(), false)) << '\n';
     }
 
     casadi_int nrow_x = dep(1).size1(), nrow_y = dep(2).size1(), ncol_y = dep(2).size2();
     g.local("rr", "casadi_real", "*");
-    g.local("ss", "casadi_real", "*");
-    g.local("tt", "casadi_real", "*");
+    g.local("cs", "const casadi_real", "*");
+    g.local("ct", "const casadi_real", "*");
     g.local("i", "casadi_int");
     g.local("j", "casadi_int");
     g.local("k", "casadi_int");
-    g << "for (i=0, rr=" << g.work(res[0], nnz()) <<"; i<" << ncol_y << "; ++i)"
+    g << "for (i=0, rr=" << g.work(res[0], nnz(), false) <<"; i<" << ncol_y << "; ++i)"
       << " for (j=0; j<" << nrow_x << "; ++j, ++rr)"
-      << " for (k=0, ss=" << g.work(arg[1], dep(1).nnz()) << "+j, tt="
-      << g.work(arg[2], dep(2).nnz()) << "+i*" << nrow_y << "; k<" << nrow_y << "; ++k)"
-      << " *rr += ss[k*" << nrow_x << "]**tt++;\n";
+      << " for (k=0, cs=" << g.work(arg[1], dep(1).nnz(), arg_is_ref[1]) << "+j, ct="
+      << g.work(arg[2], dep(2).nnz(), arg_is_ref[2]) << "+i*" << nrow_y << "; "
+      << "k<" << nrow_y << "; ++k)"
+      << " *rr += cs[k*" << nrow_x << "]**ct++;\n";
   }
 
   void Multiplication::serialize_type(SerializingStream& s) const {

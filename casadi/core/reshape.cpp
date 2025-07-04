@@ -93,9 +93,10 @@ namespace casadi {
 
   void Reshape::generate(CodeGenerator& g,
                          const std::vector<casadi_int>& arg,
-                         const std::vector<casadi_int>& res) const {
-    if (arg[0]==res[0]) return;
-    g << g.copy(g.work(arg[0], nnz()), nnz(), g.work(res[0], nnz())) << "\n";
+                         const std::vector<casadi_int>& res,
+                         const std::vector<bool>& arg_is_ref,
+                         std::vector<bool>& res_is_ref) const {
+    generate_copy(g, arg, res, arg_is_ref, res_is_ref, 0);
   }
 
   MX Reshape::get_reshape(const Sparsity& sp) const {
@@ -123,12 +124,38 @@ namespace casadi {
     dep()->primitives(it);
   }
 
-  void Reshape::split_primitives(const MX& x, std::vector<MX>::iterator& it) const {
+  template<typename T>
+  void Reshape::split_primitives_gen(const T& x, typename std::vector<T>::iterator& it) const {
     dep()->split_primitives(reshape(x, dep().size()), it);
   }
 
-  MX Reshape::join_primitives(std::vector<MX>::const_iterator& it) const {
+  void Reshape::split_primitives(const MX& x, std::vector<MX>::iterator& it) const {
+    split_primitives_gen<MX>(x, it);
+  }
+
+  void Reshape::split_primitives(const SX& x, std::vector<SX>::iterator& it) const {
+    split_primitives_gen<SX>(x, it);
+  }
+
+  void Reshape::split_primitives(const DM& x, std::vector<DM>::iterator& it) const {
+    split_primitives_gen<DM>(x, it);
+  }
+
+  template<typename T>
+  T Reshape::join_primitives_gen(typename std::vector<T>::const_iterator& it) const {
     return reshape(dep()->join_primitives(it), size());
+  }
+
+  MX Reshape::join_primitives(std::vector<MX>::const_iterator& it) const {
+    return join_primitives_gen<MX>(it);
+  }
+
+  SX Reshape::join_primitives(std::vector<SX>::const_iterator& it) const {
+    return join_primitives_gen<SX>(it);
+  }
+
+  DM Reshape::join_primitives(std::vector<DM>::const_iterator& it) const {
+    return join_primitives_gen<DM>(it);
   }
 
   bool Reshape::has_duplicates() const {

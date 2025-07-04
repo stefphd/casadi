@@ -56,6 +56,7 @@
 #include "expm.hpp"
 #include "interpolant.hpp"
 #include "external.hpp"
+#include "blazing_spline.hpp"
 
 // Misc
 #include "integration_tools.hpp"
@@ -66,5 +67,9 @@
 #include "optistack.hpp"
 #include "serializer.hpp"
 #include "tools.hpp"
+#include "resource.hpp"
+#include "archiver.hpp"
+#include "filesystem.hpp"
+#include "options.hpp"
 
 #endif // CASADI_CORE_HPP

@@ -99,6 +99,7 @@ namespace casadi {
     double min_lam_;
     bool no_nlp_grad_;
     std::vector<bool> discrete_;
+    std::vector<bool> equality_;
     ///@}
 
     // Mixed integer problem?
@@ -106,6 +107,11 @@ namespace casadi {
 
     /// Cache for KKT function
     mutable WeakRef kkt_;
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    /// Mutex for thread safety
+    mutable std::mutex kkt_mtx_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
     /** \brief Serialize an object without type information
 
@@ -220,12 +226,12 @@ namespace casadi {
     /** \brief Generate code for the function body
 
         \identifier{1o0} */
-    void codegen_body_enter(CodeGenerator& g) const;
+    void codegen_body_enter(CodeGenerator& g) const override;
 
     /** \brief Generate code for the function body
 
         \identifier{27k} */
-    void codegen_body_exit(CodeGenerator& g) const;
+    void codegen_body_exit(CodeGenerator& g) const override;
 
     /** \brief Do the derivative functions need nondifferentiated outputs?
 
@@ -275,6 +281,10 @@ namespace casadi {
 
     /// Collection of solvers
     static std::map<std::string, Plugin> solvers_;
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    static std::mutex mutex_solvers_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
     /// Infix
     static const std::string infix_;

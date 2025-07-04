@@ -27,11 +27,22 @@
 
 #include "fmu.hpp"
 #include "importer.hpp"
-#include "shared_object_internal.hpp"
+#include "shared_object.hpp"
+#include "resource.hpp"
 
 /// \cond INTERNAL
 
 namespace casadi {
+
+// Memory for event iteration
+struct EventMemory {
+  bool discrete_states_need_update;
+  bool terminate_simulation;
+  bool nominals_of_continuous_states_changed;
+  bool values_of_continuous_states_changed;
+  bool next_event_time_defined;
+  double next_event_time;
+};
 
 // Forward declarations
 class DaeBuilderInternal;
@@ -58,10 +69,51 @@ class CASADI_EXPORT FmuInternal : public SharedObjectInternal {
   ~FmuInternal() override;
 
   // Initialize
-  virtual void init(const DaeBuilderInternal* dae) = 0;
+  virtual void init(const DaeBuilderInternal* dae);
+
+  // Set C API functions
+  virtual void load_functions() = 0;
+
+  // Enter initialization mode
+  virtual int enter_initialization_mode(void* instance) const = 0;
+
+  // Exit initialization mode
+  virtual int exit_initialization_mode(void* instance) const = 0;
+
+  // Enter continuous-time mode
+  virtual int enter_continuous_time_mode(void* instance) const = 0;
+
+  // Update discrete states
+  virtual int update_discrete_states(void* instance, EventMemory* eventmem) const = 0;
+
+  virtual int get_derivatives(void* instance, double* derivatives, size_t nx) const = 0;
+
+  // Set real values
+  virtual int set_real(void* instance, const unsigned int* vr, size_t n_vr,
+    const double* values, size_t n_values) const = 0;
+
+  // Get/evaluate real values
+  virtual int get_real(void* instance, const unsigned int* vr, size_t n_vr,
+    double* values, size_t n_values) const = 0;
+
+  // Forward mode AD
+  virtual int get_directional_derivative(void* instance, const unsigned int* vr_out, size_t n_out,
+    const unsigned int* vr_in, size_t n_in, const double* seed, size_t n_seed,
+    double* sensitivity, size_t n_sensitivity) const = 0;
+
+  // Reverse mode AD
+  virtual int get_adjoint_derivative(void* instance, const unsigned int* vr_out, size_t n_out,
+    const unsigned int* vr_in, size_t n_in, const double* seed, size_t n_seed,
+    double* sensitivity, size_t n_sensitivity) const;
+
+  // Copy values set in DaeBuilder to FMU
+  virtual int set_values(void* instance) const = 0;
+
+  // Retrieve auxilliary variables from FMU
+  virtual int get_aux(void* instance) = 0;
 
   // Finalize
-  virtual void finalize() = 0;
+  void finalize();
 
   /** \brief Print
 
@@ -84,9 +136,6 @@ class CASADI_EXPORT FmuInternal : public SharedObjectInternal {
   // Index lookup for output
   size_t index_out(const std::string& n) const;
 
-  // Does the FMU support analytic derivatives?
-  virtual bool has_ad() const = 0;
-
   // Get Jacobian sparsity for a subset of inputs and outputs
   Sparsity jac_sparsity(const std::vector<size_t>& osub, const std::vector<size_t>& isub) const;
 
@@ -104,14 +153,26 @@ class CASADI_EXPORT FmuInternal : public SharedObjectInternal {
   // Print description of an input
   std::string desc_in(FmuMemory* m, size_t id, bool more = true) const;
 
+  // Name of system, per the FMI specification
+  virtual std::string system_infix() const = 0;
+
+  // DLL suffix, per the FMI specification
+  static std::string dll_suffix();
+
   // Load an FMI function
   template<typename T>
   T* load_function(const std::string& symname);
 
+  // Iteration to update discrete states
+  int discrete_states_iter(void* instance) const;
+
   /** \brief Initalize memory block
 
       \identifier{271} */
-  virtual int init_mem(FmuMemory* m) const = 0;
+  int init_mem(FmuMemory* m) const;
+
+  // New memory object
+  virtual void* instantiate() const = 0;
 
   // Free FMU instance
   virtual void free_instance(void* c) const = 0;
@@ -123,43 +184,70 @@ class CASADI_EXPORT FmuInternal : public SharedObjectInternal {
   void request(FmuMemory* m, size_t ind) const;
 
   // Calculate all requested variables
-  virtual int eval(FmuMemory* m) const = 0;
+  int eval(FmuMemory* m) const;
 
   // Get a calculated variable
   void get(FmuMemory* m, size_t id, double* value) const;
 
-  // Set seed
-  void set_seed(FmuMemory* m, casadi_int nseed,
+  // Set forward seeds
+  void set_fwd(FmuMemory* m, casadi_int nseed,
     const casadi_int* id, const double* v) const;
-
-  // Request the calculation of a sensitivity
-  void request_sens(FmuMemory* m, casadi_int nsens, const casadi_int* id,
-    const casadi_int* wrt_id) const;
 
   // Set all forward seeds for a single input
   void set_fwd(FmuMemory* m, size_t ind, const double* v) const;
 
+  // Request the calculation of forward sensitivities
+  void request_fwd(FmuMemory* m, casadi_int nsens, const casadi_int* id,
+    const casadi_int* wrt_id) const;
+
   // Request the calculation of all forward sensitivities for an output
   void request_fwd(FmuMemory* m, casadi_int ind) const;
+
+  // Calculate forward directional derivatives
+  int eval_fwd(FmuMemory* m, bool independent_seeds) const;
+
+  // Calculate forward directional derivatives using AD
+  int eval_ad(FmuMemory* m) const;
+
+  // Calculate forward directional derivatives using FD
+  int eval_fd(FmuMemory* m, bool independent_seeds) const;
+
+  // Get forward  sensitivities
+  void get_fwd(FmuMemory* m, casadi_int nsens,
+    const casadi_int* id, double* v) const;
 
   // Get the forward sensitivities for a single output
   void get_fwd(FmuMemory* m, size_t ind, double* v) const;
 
-  // Calculate directional derivatives
-  int eval_derivative(FmuMemory* m, bool independent_seeds) const;
+  // Set adjoint seeds
+  void set_adj(FmuMemory* m, casadi_int nseed,
+    const casadi_int* id, const double* v) const;
 
-  // Calculate directional derivatives using AD
-  virtual int eval_ad(FmuMemory* m) const = 0;
+  // Set all adjoint seeds for a single output
+  void set_adj(FmuMemory* m, size_t ind, const double* v) const;
 
-  // Calculate directional derivatives using FD
-  virtual int eval_fd(FmuMemory* m, bool independent_seeds) const = 0;
+  // Request the calculation of adjoint sensitivities
+  void request_adj(FmuMemory* m, casadi_int nsens, const casadi_int* id,
+    const casadi_int* wrt_id) const;
 
-  // Get calculated derivatives
-  void get_sens(FmuMemory* m, casadi_int nsens,
+  // Request the calculation of all adjoint sensitivities for an input
+  void request_adj(FmuMemory* m, casadi_int ind) const;
+
+  // Calculate adjoint sensitivities
+  int eval_adj(FmuMemory* m) const;
+
+  // Get adjoint sensitivities
+  void get_adj(FmuMemory* m, casadi_int nsens,
     const casadi_int* id, double* v) const;
 
-  // Gather user sensitivities
-  void gather_sens(FmuMemory* m) const;
+  // Get the adjoint sensitivities for a single input
+  void get_adj(FmuMemory* m, size_t ind, double* v) const;
+
+  // Gather forward sensitivities
+  void gather_fwd(FmuMemory* m) const;
+
+  // Gather adjoint sensitivities
+  void gather_adj(FmuMemory* m) const;
 
   // Gather user inputs and outputs
   void gather_io(FmuMemory* m) const;
@@ -180,6 +268,10 @@ class CASADI_EXPORT FmuInternal : public SharedObjectInternal {
  protected:
   explicit FmuInternal(DeserializingStream& s);
 
+  // Resource holding unzipped data (notably DLL)
+  // Must come before li_, because of destructor order
+  Resource resource_;
+
   /// Instance name
   std::string name_;
 
@@ -190,11 +282,38 @@ class CASADI_EXPORT FmuInternal : public SharedObjectInternal {
   // Auxilliary outputs
   std::vector<std::string> aux_;
 
+  // Path to the FMU resource directory
+  std::string resource_loc_;
+
+  // Tolerance
+  double fmutol_;
+
+  // Instance name
+  std::string instance_name_;
+
+  // GUID / instantiation_token
+  std::string instantiation_token_;
+
+  // Logging?
+  bool logging_on_;
+
+  // Number of event indicators
+  casadi_int number_of_event_indicators_;
+
+  // Does the FMU declare analytic derivatives support?
+  bool provides_directional_derivatives_, provides_adjoint_derivatives_;
+
+  // Does the FMU declare restrictions on instantiation?
+  bool can_be_instantiated_only_once_per_process_;
+
   /// DLL
   Importer li_;
 
   // Mapping from scheme variable to and from FMU variable indices
   std::vector<size_t> iind_, iind_map_, oind_, oind_map_;
+
+  // Is there an independent variable?
+  bool has_independent_;
 
   // Meta information about the input/output variable subsets
   std::vector<double> nominal_in_, nominal_out_;
@@ -211,6 +330,16 @@ class CASADI_EXPORT FmuInternal : public SharedObjectInternal {
 
   // Sparsity pattern for extended Jacobian, Hessian
   Sparsity jac_sp_, hess_sp_;
+
+  mutable bool warning_fired_discrete_states_need_update_;
+  mutable bool warning_fired_terminate_simulation_;
+  mutable bool warning_fired_nominals_of_continuous_states_changed_;
+  mutable bool warning_fired_values_of_continuous_states_changed_;
+  mutable bool warning_fired_next_event_time_defined_;
+
+  size_t nx_;
+  // Instead of set_real+get_real, do set_real+get_real+get_derivatives+get_real
+  bool do_evaluation_dance_;
 };
 
 template<typename T>

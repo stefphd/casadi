@@ -68,6 +68,9 @@ namespace casadi {
     // Creator (values may be different)
     static ConstantMX* create(const Sparsity& sp, const std::string& fname);
 
+    // Creator (values may be different)
+    static ConstantMX* create(const Matrix<double>& val, const std::string& name);
+
     /// Evaluate the function numerically
     int eval(const double** arg, double** res, casadi_int* iw, double* w) const override = 0;
 
@@ -137,15 +140,31 @@ namespace casadi {
         \identifier{z3} */
     void primitives(std::vector<MX>::iterator& it) const override;
 
+    /// Split up an expression along primitives (template)
+    template<typename T>
+    void split_primitives_gen(const T& x, typename std::vector<T>::iterator& it) const;
+
+    /// @{
     /** \brief Split up an expression along symbolic primitives
 
         \identifier{z4} */
     void split_primitives(const MX& x, std::vector<MX>::iterator& it) const override;
+    void split_primitives(const SX& x, std::vector<SX>::iterator& it) const override;
+    void split_primitives(const DM& x, std::vector<DM>::iterator& it) const override;
+    /// @}
 
+    /// Join an expression along symbolic primitives (template)
+    template<typename T>
+    T join_primitives_gen(typename std::vector<T>::const_iterator& it) const;
+
+    /// @{
     /** \brief Join an expression along symbolic primitives
 
         \identifier{z5} */
     MX join_primitives(std::vector<MX>::const_iterator& it) const override;
+    SX join_primitives(std::vector<SX>::const_iterator& it) const override;
+    DM join_primitives(std::vector<DM>::const_iterator& it) const override;
+    /// @}
 
     /** \brief Detect duplicate symbolic expressions
 
@@ -209,7 +228,9 @@ namespace casadi {
         \identifier{ze} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief  Check if a particular integer value
 
@@ -300,7 +321,9 @@ namespace casadi {
         \identifier{zq} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Add a dependent function
 
@@ -330,6 +353,86 @@ namespace casadi {
 
         \identifier{zw} */
     explicit ConstantFile(DeserializingStream& s);
+  };
+
+  /// A constant to be managed by a pool
+  class CASADI_EXPORT ConstantPool : public ConstantMX {
+  public:
+
+    /** \brief  Constructor
+
+        \identifier{29v} */
+    explicit ConstantPool(const DM& x, const std::string& name);
+
+    /// Destructor
+    ~ConstantPool() override {}
+
+    /** \brief  Print expression
+
+        \identifier{29w} */
+    std::string disp(const std::vector<std::string>& arg) const override;
+
+    /// Get the value (only for scalar constant nodes)
+    double to_double() const override;
+
+    /// Get the value (only for constant nodes)
+    Matrix<double> get_DM() const override;
+
+    /** \brief  Evaluate the function numerically
+
+        \identifier{29x} */
+    int eval(const double** arg, double** res, casadi_int* iw, double* w) const override {
+      if (res[0]) std::copy(x_.begin(), x_.end(), res[0]);
+      return 0;
+    }
+
+    /** \brief  Evaluate the function symbolically (SX)
+
+        \identifier{29y} */
+    int eval_sx(const SXElem** arg, SXElem** res,
+                         casadi_int* iw, SXElem* w) const override {
+      casadi_error("eval_sx not supported");
+      return 0;
+    }
+
+    /** \brief Generate code for the operation
+
+        \identifier{29z} */
+    void generate(CodeGenerator& g,
+                  const std::vector<casadi_int>& arg,
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
+
+    /** \brief Add a dependent function
+
+        \identifier{2a0} */
+    void add_dependency(CodeGenerator& g) const override;
+
+    /** \brief pool identifier
+
+        \identifier{2a1} */
+    std::string name_;
+
+    /** \brief nonzeros
+
+        \identifier{2a2} */
+    std::vector<double> x_;
+
+    /** \brief Serialize an object without type information
+
+        \identifier{2a3} */
+    void serialize_body(SerializingStream& s) const override;
+
+    /** \brief Serialize type information
+
+        \identifier{2a4} */
+    void serialize_type(SerializingStream& s) const override;
+
+    /** \brief Deserializing constructor
+
+        \identifier{2a5} */
+    explicit ConstantPool(DeserializingStream& s);
   };
 
   /// A zero-by-zero matrix
@@ -380,7 +483,9 @@ namespace casadi {
         \identifier{101} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override {}
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override {}
 
     /// Get the value (only for scalar constant nodes)
     double to_double() const override { return 0;}
@@ -518,7 +623,9 @@ namespace casadi {
         \identifier{10b} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief  Check if a particular integer value
 
@@ -706,7 +813,7 @@ namespace casadi {
       if (v_.value==-1) return -y->get_unary(OP_INV);
       break;
     case OP_POW:
-      if (v_.value==0) return MX::zeros(y.sparsity());
+      // Note: v_.value can still lead to one when a y entry is zero
       if (v_.value==1) return MX::ones(y.sparsity());
       if (v_.value==std::exp(1.0)) return y->get_unary(OP_EXP);
       break;
@@ -743,16 +850,18 @@ namespace casadi {
   template<typename Value>
   void Constant<Value>::generate(CodeGenerator& g,
                                  const std::vector<casadi_int>& arg,
-                                 const std::vector<casadi_int>& res) const {
+                                 const std::vector<casadi_int>& res,
+                                 const std::vector<bool>& arg_is_ref,
+                                 std::vector<bool>& res_is_ref) const {
     if (nnz()==0) {
       // Quick return
     } else if (nnz()==1) {
       g << g.workel(res[0]) << " = " << g.constant(to_double()) << ";\n";
     } else {
       if (to_double()==0) {
-        g << g.clear(g.work(res[0], nnz()), nnz()) << '\n';
+        g << g.clear(g.work(res[0], nnz(), false), nnz()) << '\n';
       } else {
-        g << g.fill(g.work(res[0], nnz()), nnz(), g.constant(to_double())) << '\n';
+        g << g.fill(g.work(res[0], nnz(), false), nnz(), g.constant(to_double())) << '\n';
       }
     }
   }

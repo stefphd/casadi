@@ -5,6 +5,11 @@ if(SWIG_EXPORT)
   set(CMAKE_SWIG_WRAP_OUTDIR ${CMAKE_CURRENT_SOURCE_DIR}/target/source/dummy)
 endif()
 
+# Main header files
+if(NOT SKIP_CONFIG_H_GENERATION)
+  configure_file(../swig_config.h.cmake "${CMAKE_CURRENT_BINARY_DIR}/swig_config.h" ESCAPE_QUOTES)
+endif()
+
 if(SWIG_IMPORT)
   set(MEX_FILE ${CMAKE_CURRENT_SOURCE_DIR}/target/source/casadiMATLAB_wrap.cxx)
   set_source_files_properties(${MEX_FILE}  PROPERTIES  CPLUSPLUS ON)
@@ -56,6 +61,9 @@ if (WITH_MATLAB AND NOT SWIG_EXPORT)
   # Compile MEX file
   add_library(casadiMATLAB MODULE ${MEX_FILE} ${MEX_VERSION_FILE})
   target_link_libraries(casadiMATLAB matlab::matlab casadi)
+  if(MSVC)
+    target_compile_options(casadiMATLAB PRIVATE "/bigobj")
+  endif()
   set_target_properties(casadiMATLAB
     PROPERTIES OUTPUT_NAME "casadiMEX"
                PREFIX ""
@@ -80,7 +88,9 @@ if (WITH_OCTAVE AND NOT SWIG_EXPORT)
   if(APPLE)
     set_target_properties(casadiOCTAVE PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
   endif()
-
+  if(MSVC)
+    target_compile_options(casadiOCTAVE PRIVATE "/bigobj")
+  endif()
   set_target_properties(casadiOCTAVE
     PROPERTIES OUTPUT_NAME "casadiMEX"
                PREFIX ""

@@ -61,8 +61,9 @@ namespace casadi {
   #include "fatrop_conic_runtime.hpp"
 }
 
-#include <ocp/OCPAbstract.hpp>
-#include <ocp/StageOCPApplication.hpp>
+#include <fatrop/ocp/OCPAbstract.hpp>
+#include <fatrop/ocp/StageOCPApplication.hpp>
+#include <fatrop/ocp/OCPCInterface.h>
 
 /** \pluginsection{Conic,fatrop} */
 
@@ -166,11 +167,13 @@ namespace casadi {
     void serialize_body(SerializingStream &s) const override;
 
     /** \brief Deserialize with type disambiguation */
-    static ProtoFunction* deserialize(DeserializingStream& s) { return new FatropConicInterface(s); }
+    static ProtoFunction* deserialize(DeserializingStream& s) {
+      return new FatropConicInterface(s);
+    }
 
     friend class CasadiStructuredQP;
 
-  protected:
+  public:
     explicit FatropConicInterface(DeserializingStream& s);
 
     // Memory structure
@@ -206,8 +209,15 @@ namespace casadi {
     casadi_int print_level_;
 
 
-    std::vector<casadi_int> AB_offsets_, CD_offsets_, RSQ_offsets_;
+    // An enum field for the structure detection
+    enum structure_detection {
+      STRUCTURE_NONE,
+      STRUCTURE_AUTO,
+      STRUCTURE_MANUAL
+    };
+    structure_detection structure_detection_;
 
+    std::vector<casadi_int> AB_offsets_, CD_offsets_, RSQ_offsets_;
 
     bool warm_start_;
     double inf_;

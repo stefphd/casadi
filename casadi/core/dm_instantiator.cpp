@@ -25,6 +25,7 @@
 #define CASADI_DM_INSTANTIATOR_CPP
 #include "matrix_impl.hpp"
 
+#include "filesystem_impl.hpp"
 namespace casadi {
 
 
@@ -89,6 +90,12 @@ namespace casadi {
   std::vector<DM> CASADI_EXPORT DM::
   cse(const std::vector<DM>& e) {
     return e;
+  }
+
+  template<>
+  std::vector<double> CASADI_EXPORT DM::
+  call(const Function& f, const std::vector<double>& dep) {
+    casadi_error("Not implemented");
   }
 
   template<> void CASADI_EXPORT DM::export_code(const std::string& lang,
@@ -201,7 +208,8 @@ namespace casadi {
       const Sparsity& sp, const double* nonzeros,
       const std::string& format_hint) {
     std::string format = Sparsity::file_format(filename, format_hint, {"mtx", "txt"});
-    std::ofstream out(filename);
+    std::ofstream out;
+    Filesystem::open(out, filename);
     if (format=="mtx") {
       normalized_setup(out);
       out << "%%MatrixMarket matrix coordinate real general" << std::endl;
@@ -376,9 +384,15 @@ namespace casadi {
     }
   }
 
-
   // Instantiate templates
   template class CASADI_EXPORT casadi_limits<double>;
+  #if __GNUC__
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wattributes"
+  #endif
   template class CASADI_EXPORT Matrix<double>;
+  #if __GNUC__
+  #pragma GCC diagnostic pop
+  #endif
 
 } // namespace casadi

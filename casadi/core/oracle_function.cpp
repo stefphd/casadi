@@ -32,6 +32,14 @@
 
 namespace casadi {
 
+OracleCallback::OracleCallback(const std::string& name,
+  OracleFunction* oracle) : name(name), oracle_(oracle) {
+}
+
+OracleCallback::OracleCallback() : name("undefined"), oracle_(0) {
+}
+
+
 OracleFunction::OracleFunction(const std::string& name, const Function& oracle)
 : FunctionInternal(name), oracle_(oracle) {
 }
@@ -43,7 +51,11 @@ const Options OracleFunction::options_
 = {{&FunctionInternal::options_},
     {{"expand",
       {OT_BOOL,
-      "Replace MX with SX expressions in problem formulation [false]"}},
+      "Replace MX with SX expressions in problem formulation [false] "
+      "This happens before creating derivatives unless indicated by postpone_expand"}},
+    {"postpone_expand",
+      {OT_BOOL,
+      "When expand is active, postpone it until after creation of derivatives. Default: False"}},
     {"monitor",
       {OT_STRINGVECTOR,
       "Set of user problem functions to be monitored"}},
@@ -66,15 +78,19 @@ void OracleFunction::init(const Dict& opts) {
 
   // Default options
   bool expand = false;
+  bool postpone_expand = false;
 
   show_eval_warnings_ = true;
 
   max_num_threads_ = 1;
+  post_expand_ = false;
 
   // Read options
   for (auto&& op : opts) {
     if (op.first=="expand") {
       expand = op.second;
+    } else if (op.first=="postpone_expand") {
+      postpone_expand = op.second;
     } else if (op.first=="common_options") {
       common_options_ = op.second;
     } else if (op.first=="specific_options") {
@@ -93,7 +109,8 @@ void OracleFunction::init(const Dict& opts) {
   }
 
   // Replace MX oracle with SX oracle?
-  if (expand) oracle_ = oracle_.expand();
+  if (expand && !postpone_expand) oracle_ = oracle_.expand();
+  if (expand && postpone_expand) post_expand_ = true;
 
   stride_arg_ = 0;
   stride_res_ = 0;
@@ -103,6 +120,12 @@ void OracleFunction::init(const Dict& opts) {
 }
 
 void OracleFunction::finalize() {
+  if (post_expand_) {
+    for (auto&& e : all_functions_) {
+      Function& fcn = e.second.f;
+      fcn = fcn.expand();
+    }
+  }
 
   // Allocate space for (parallel) evaluations
   // Lifted from set_function as max_num_threads_ is not known yet in that method
@@ -200,7 +223,7 @@ Function OracleFunction::create_function(const std::string& fname,
     // TODO(jgillis) Conditionally convert to SX
 
     // Add to cache
-    tocache(ret);
+    tocache_if_missing(ret);
   }
 
   // Save and return
@@ -244,7 +267,7 @@ Function OracleFunction::create_function(const Function& oracle, const std::stri
     }
 
     // Add to cache
-    tocache(ret);
+    tocache_if_missing(ret);
   }
 
   // Save and return
@@ -267,6 +290,14 @@ set_function(const Function& fcn, const std::string& fname, bool jit) {
   r.f = fcn;
   r.jit = jit;
 }
+
+
+  void OracleFunction::codegen_body_enter(CodeGenerator& g) const {
+    g.local("d_oracle", "struct casadi_oracle_data");
+  }
+
+  void OracleFunction::codegen_body_exit(CodeGenerator& g) const {
+  }
 
 int OracleFunction::
 calc_function(OracleMemory* m, const std::string& fcn,
@@ -479,8 +510,13 @@ void OracleFunction::set_temp(void* mem, const double** arg, double** res,
   m->res = res;
   m->iw = iw;
   m->w = w;
+  m->d_oracle.arg = arg;
+  m->d_oracle.res = res;
+  m->d_oracle.iw = iw;
+  m->d_oracle.w = w;
   for (int i = 0; i < max_num_threads_; ++i) {
     auto* ml = m->thread_local_mem[i];
+    for (auto&& s : ml->fstats) s.second.reset();
     ml->arg = arg;
     ml->res = res;
     ml->iw = iw;
@@ -612,6 +648,7 @@ OracleFunction::OracleFunction(DeserializingStream& s) : FunctionInternal(s) {
     stride_iw_ = 0;
     stride_w_ = 0;
   }
+  post_expand_ = false;
 }
 
 } // namespace casadi

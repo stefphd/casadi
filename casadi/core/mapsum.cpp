@@ -46,7 +46,7 @@ namespace casadi {
         ret = Function::create(new MapSum(name, f, n, reduce_in, reduce_out), opts);
         casadi_assert_dev(ret.name()==name);
         // Save in cache
-        f->tocache(ret, suffix);
+        f->tocache_if_missing(ret, suffix);
       }
       return ret.wrap_as_needed(opts);
     } else {
@@ -179,7 +179,8 @@ namespace casadi {
   }
 
   int MapSum::eval_sx(const SXElem** arg, SXElem** res,
-      casadi_int* iw, SXElem* w, void* mem) const {
+      casadi_int* iw, SXElem* w, void* mem,
+      bool always_inline, bool never_inline) const {
     return eval_gen(arg, res, iw, w);
   }
 
@@ -410,6 +411,7 @@ namespace casadi {
     // This checkout/release dance is an optimization.
     // Could also use the thread-safe variant f_(arg1, res1, iw, w)
     // in Map::eval_gen
+    setup(mem, arg, res, iw, w);
     scoped_checkout<Function> m(f_);
     return eval_gen(arg, res, iw, w, m);
   }

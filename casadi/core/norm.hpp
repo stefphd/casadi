@@ -108,7 +108,9 @@ namespace casadi {
         \identifier{1ex} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief  Print expression
 
@@ -151,6 +153,11 @@ namespace casadi {
         \identifier{1f4} */
     ~Norm2() override {}
 
+    /** \brief  Evaluate symbolically (MX)
+
+        \identifier{2bi} */
+    void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const override;
+
     /** \brief  Print expression
 
         \identifier{1f5} */
@@ -192,6 +199,42 @@ namespace casadi {
         \identifier{1fb} */
     ~Norm1() override {}
 
+    /** \brief Calculate forward mode directional derivatives
+
+        \identifier{2bj} */
+    void ad_forward(const std::vector<std::vector<MX> >& fseed,
+                         std::vector<std::vector<MX> >& fsens) const override;
+
+    /** \brief Calculate reverse mode directional derivatives
+
+        \identifier{2bk} */
+    void ad_reverse(const std::vector<std::vector<MX> >& aseed,
+                         std::vector<std::vector<MX> >& asens) const override;
+
+    /// Evaluate the function (template)
+    template<typename T>
+    int eval_gen(const T** arg, T** res, casadi_int* iw, T* w) const;
+
+    /// Evaluate the function numerically
+    int eval(const double** arg, double** res, casadi_int* iw, double* w) const override;
+
+    /// Evaluate the function symbolically (SX)
+    int eval_sx(const SXElem** arg, SXElem** res, casadi_int* iw, SXElem* w) const override;
+
+    /** \brief  Evaluate symbolically (MX)
+
+        \identifier{2bl} */
+    void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const override;
+
+    /** \brief Generate code for the operation
+
+        \identifier{2bm} */
+    void generate(CodeGenerator& g,
+                  const std::vector<casadi_int>& arg,
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
+
     /** \brief  Print expression
 
         \identifier{1fc} */
@@ -232,6 +275,42 @@ namespace casadi {
 
         \identifier{1fi} */
     ~NormInf() override {}
+
+    /** \brief Calculate forward mode directional derivatives
+
+        \identifier{2bn} */
+    void ad_forward(const std::vector<std::vector<MX> >& fseed,
+                         std::vector<std::vector<MX> >& fsens) const override;
+
+    /** \brief Calculate reverse mode directional derivatives
+
+        \identifier{2bo} */
+    void ad_reverse(const std::vector<std::vector<MX> >& aseed,
+                         std::vector<std::vector<MX> >& asens) const override;
+
+    /// Evaluate the function (template)
+    template<typename T>
+    int eval_gen(const T** arg, T** res, casadi_int* iw, T* w) const;
+
+    /// Evaluate the function numerically
+    int eval(const double** arg, double** res, casadi_int* iw, double* w) const override;
+
+    /// Evaluate the function symbolically (SX)
+    int eval_sx(const SXElem** arg, SXElem** res, casadi_int* iw, SXElem* w) const override;
+
+    /** \brief  Evaluate symbolically (MX)
+
+        \identifier{2bp} */
+    void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const override;
+
+    /** \brief Generate code for the operation
+
+        \identifier{2bq} */
+    void generate(CodeGenerator& g,
+                  const std::vector<casadi_int>& arg,
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief  Print expression
 

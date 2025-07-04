@@ -239,12 +239,6 @@ void SundialsInterface::init(const Dict& opts) {
     linsolF_ = Linsol("linsolF", linear_solver_, jacF_sp, linear_solver_options_);
   }
 
-  // Allocate work vectors
-  alloc_w(np_, true); // p
-  alloc_w(nu_, true); // u
-  alloc_w(nrp_, true); // rp
-  alloc_w(2 * std::max(nx_ + nz_, nrx_ + nrz_), true); // v1, v2
-
   // Attach functions to calculate DAE and quadrature RHS all-at-once
   if (nfwd_ > 0) {
     create_forward("daeF", nfwd_);
@@ -286,11 +280,6 @@ void SundialsInterface::set_work(void* mem, const double**& arg, double**& res,
   Integrator::set_work(mem, arg, res, iw, w);
 
   // Work vectors
-  m->p = w; w += np_;
-  m->u = w; w += nu_;
-  m->rp = w; w += nrp_;
-  m->v1 = w; w += std::max(nx_ + nz_, nrx_ + nrz_);
-  m->v2 = w; w += std::max(nx_ + nz_, nrx_ + nrz_);
   m->jacF = w; w += linsolF_.sparsity().nnz();
 
   // Work vectors
@@ -306,10 +295,10 @@ int SundialsInterface::init_mem(void* mem) const {
   auto m = static_cast<SundialsMemory*>(mem);
 
   // Allocate NVectors
-  m->xz = N_VNew_Serial(nx_ + nz_);
-  m->q = N_VNew_Serial(nq_);
-  m->rxz = N_VNew_Serial(nrx_ + nrz_);
-  m->ruq = N_VNew_Serial(nrq_ + nuq_);
+  m->v_xz = N_VNew_Serial(nx_ + nz_);
+  m->v_q = N_VNew_Serial(nq_);
+  m->v_adj_xz = N_VNew_Serial(nrx_ + nrz_);
+  m->v_adj_pu = N_VNew_Serial(nrq_ + nuq_);
 
   // Absolute tolerances as NVector
   if (scale_abstol_) {
@@ -339,29 +328,27 @@ int SundialsInterface::init_mem(void* mem) const {
   return 0;
 }
 
-void SundialsInterface::reset(IntegratorMemory* mem, const double* x,
-    const double* z, const double* p) const {
+void SundialsInterface::reset(IntegratorMemory* mem, bool first_call) const {
   auto m = static_cast<SundialsMemory*>(mem);
 
-  // Reset stats
-  reset_stats(m);
+  // Reset the base classes
+  Integrator::reset(mem, first_call);
 
-  // Set parameters
-  casadi_copy(p, np_, m->p);
+  // Reset stats
+  if (first_call) reset_stats(m);
 
   // Set the state
-  casadi_copy(x, nx_, NV_DATA_S(m->xz));
-  casadi_copy(z, nz_, NV_DATA_S(m->xz) + nx_);
-
-  // Reset summation states
-  N_VConst(0., m->q);
+  casadi_copy(m->q, nq_, NV_DATA_S(m->v_q));
+  casadi_copy(m->x, nx_, NV_DATA_S(m->v_xz));
+  casadi_copy(m->z, nz_, NV_DATA_S(m->v_xz) + nx_);
 }
 
 void SundialsInterface::reset_stats(SundialsMemory* m) const {
   // Reset stats, forward problem
   m->nsteps = m->nfevals = m->nlinsetups = m->netfails = 0;
   m->qlast = m->qcur = -1;
-  m->hinused = m->hlast = m->hcur = m->tcur = casadi::nan;
+  m->tcur = t0_;
+  m->hinused = m->hlast = m->hcur = casadi::nan;
   m->nniters = m->nncfails = 0;
 
   // Reset stats, backward problem
@@ -399,44 +386,44 @@ void SundialsInterface::resetB(IntegratorMemory* mem) const {
   auto m = static_cast<SundialsMemory*>(mem);
 
   // Clear seeds
-  casadi_clear(m->rp, nrp_);
-  casadi_clear(NV_DATA_S(m->rxz), nrx_ + nrz_);
+  casadi_clear(m->adj_q, nrp_);
+  casadi_clear(NV_DATA_S(m->v_adj_xz), nrx_ + nrz_);
 
   // Reset summation states
-  N_VConst(0., m->ruq);
+  N_VConst(0., m->v_adj_pu);
 }
 
 void SundialsInterface::impulseB(IntegratorMemory* mem,
-    const double* rx, const double* rz, const double* rp) const {
+    const double* adj_x, const double* adj_z, const double* adj_q) const {
   auto m = static_cast<SundialsMemory*>(mem);
 
   // Add impulse to backward parameters
-  casadi_axpy(nrp_, 1., rp, m->rp);
+  casadi_axpy(nrp_, 1., adj_q, m->adj_q);
 
   // Add impulse to backward state
-  casadi_axpy(nrx_, 1., rx, NV_DATA_S(m->rxz));
+  casadi_axpy(nrx_, 1., adj_x, NV_DATA_S(m->v_adj_xz));
 
   // Add impulse to algebraic variables:
   // If nonzero, this has to be propagated to an impulse in backward state
-  // casadi_copy(rz, nrz_, NV_DATA_S(m->rxz) + nrx_);
-  casadi_axpy(nrz_, 1., rz, NV_DATA_S(m->rxz) + nrx_);
+  // casadi_copy(adj_z, nrz_, NV_DATA_S(m->v_adj_xz) + nrx_);
+  casadi_axpy(nrz_, 1., adj_z, NV_DATA_S(m->v_adj_xz) + nrx_);
 }
 
 SundialsMemory::SundialsMemory() {
-  this->xz  = nullptr;
-  this->q = nullptr;
-  this->rxz = nullptr;
-  this->ruq = nullptr;
+  this->v_xz  = nullptr;
+  this->v_q = nullptr;
+  this->v_adj_xz = nullptr;
+  this->v_adj_pu = nullptr;
   this->first_callB = true;
   this->abstolv = nullptr;
   this->mem_linsolF = -1;
 }
 
 SundialsMemory::~SundialsMemory() {
-  if (this->xz) N_VDestroy_Serial(this->xz);
-  if (this->q) N_VDestroy_Serial(this->q);
-  if (this->rxz) N_VDestroy_Serial(this->rxz);
-  if (this->ruq) N_VDestroy_Serial(this->ruq);
+  if (this->v_xz) N_VDestroy_Serial(this->v_xz);
+  if (this->v_q) N_VDestroy_Serial(this->v_q);
+  if (this->v_adj_xz) N_VDestroy_Serial(this->v_adj_xz);
+  if (this->v_adj_pu) N_VDestroy_Serial(this->v_adj_pu);
   if (this->abstolv) N_VDestroy_Serial(this->abstolv);
 }
 
@@ -606,7 +593,8 @@ int SundialsInterface::calc_daeF(SundialsMemory* m, double t, const double* x, c
 }
 
 int SundialsInterface::calc_daeB(SundialsMemory* m, double t, const double* x, const double* z,
-    const double* rx, const double* rz, const double* rp, double* adj_x, double* adj_z) const {
+    const double* adj_ode, const double* adj_alg, const double* adj_quad,
+    double* adj_x, double* adj_z) const {
   // Evaluate nondifferentiated
   m->arg[BDYN_T] = &t;  // t
   m->arg[BDYN_X] = x;  // x
@@ -616,9 +604,11 @@ int SundialsInterface::calc_daeB(SundialsMemory* m, double t, const double* x, c
   m->arg[BDYN_OUT_ODE] = nullptr;  // out_ode
   m->arg[BDYN_OUT_ALG] = nullptr;  // out_alg
   m->arg[BDYN_OUT_QUAD] = nullptr;  // out_quad
-  m->arg[BDYN_ADJ_ODE] = rx;  // adj_ode
-  m->arg[BDYN_ADJ_ALG] = rz;  // adj_alg
-  m->arg[BDYN_ADJ_QUAD] = rp;  // adj_quad
+  m->arg[BDYN_OUT_ZERO] = nullptr;  // out_zero
+  m->arg[BDYN_ADJ_ODE] = adj_ode;  // adj_ode
+  m->arg[BDYN_ADJ_ALG] = adj_alg;  // adj_alg
+  m->arg[BDYN_ADJ_QUAD] = adj_quad;  // adj_quad
+  m->arg[BDYN_ADJ_ZERO] = nullptr;  // adj_zero
   m->res[BDAE_ADJ_X] = adj_x;  // adj_x
   m->res[BDAE_ADJ_Z] = adj_z;  // adj_z
   if (calc_function(m, "daeB")) return 1;
@@ -634,12 +624,14 @@ int SundialsInterface::calc_daeB(SundialsMemory* m, double t, const double* x, c
     m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_OUT_ODE] = nullptr;  // fwd:out_ode
     m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_OUT_ALG] = nullptr;  // fwd:out_alg
     m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_OUT_QUAD] = nullptr;  // fwd:out_quad
+    m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_OUT_ZERO] = nullptr;  // fwd:out_zero
     m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_ADJ_ODE] =
-      rx ? rx + nrx1_ * nadj_ : 0;  // fwd:adj_ode
+      adj_ode ? adj_ode + nrx1_ * nadj_ : 0;  // fwd:adj_ode
     m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_ADJ_ALG] =
-      rz ? rz + nrz1_ * nadj_ : 0;  // fwd:adj_alg
+      adj_alg ? adj_alg + nrz1_ * nadj_ : 0;  // fwd:adj_alg
     m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_ADJ_QUAD] =
-      rp ? rp + nrp1_ * nadj_ : 0;  // fwd:adj_quad
+      adj_quad ? adj_quad + nrp1_ * nadj_ : 0;  // fwd:adj_quad
+    m->arg[BDYN_NUM_IN + BDAE_NUM_OUT + BDYN_ADJ_ZERO] = nullptr;  // fwd:adj_zero
     m->res[BDAE_ADJ_X] = adj_x ? adj_x + nrx1_ * nadj_ : 0;  // fwd:adj_x
     m->res[BDAE_ADJ_Z] = adj_z ? adj_z + nrz1_ * nadj_ : 0;  // fwd:adj_z
     if (calc_function(m, forward_name("daeB", nfwd_))) return 1;
@@ -671,7 +663,7 @@ int SundialsInterface::calc_quadF(SundialsMemory* m, double t, const double* x, 
 }
 
 int SundialsInterface::calc_quadB(SundialsMemory* m, double t, const double* x, const double* z,
-    const double* rx, const double* rz, double* adj_p, double* adj_u) const {
+    const double* adj_ode, const double* adj_alg, double* adj_p, double* adj_u) const {
   // Evaluate nondifferentiated
   m->arg[BDYN_T] = &t;  // t
   m->arg[BDYN_X] = x;  // x
@@ -681,9 +673,11 @@ int SundialsInterface::calc_quadB(SundialsMemory* m, double t, const double* x, 
   m->arg[BDYN_OUT_ODE] = nullptr;  // out_ode
   m->arg[BDYN_OUT_ALG] = nullptr;  // out_alg
   m->arg[BDYN_OUT_QUAD] = nullptr;  // out_quad
-  m->arg[BDYN_ADJ_ODE] = rx;  // adj_ode
-  m->arg[BDYN_ADJ_ALG] = rz;  // adj_alg
-  m->arg[BDYN_ADJ_QUAD] = m->rp;  // adj_quad
+  m->arg[BDYN_OUT_ZERO] = nullptr;  // out_zero
+  m->arg[BDYN_ADJ_ODE] = adj_ode;  // adj_ode
+  m->arg[BDYN_ADJ_ALG] = adj_alg;  // adj_alg
+  m->arg[BDYN_ADJ_QUAD] = m->adj_q;  // adj_quad
+  m->arg[BDYN_ADJ_ZERO] = nullptr;  // adj_zero
   m->res[BQUAD_ADJ_P] = adj_p;  // adj_p
   m->res[BQUAD_ADJ_U] = adj_u;  // adj_u
   if (calc_function(m, "quadB")) return 1;
@@ -699,11 +693,13 @@ int SundialsInterface::calc_quadB(SundialsMemory* m, double t, const double* x, 
     m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_OUT_ODE] = nullptr;  // fwd:out_ode
     m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_OUT_ALG] = nullptr;  // fwd:out_alg
     m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_OUT_QUAD] = nullptr;  // fwd:out_quad
+    m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_OUT_ZERO] = nullptr;  // fwd:out_zero
     m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_ADJ_ODE] =
-      rx ? rx + nrx1_ * nadj_ : 0;  // fwd:adj_ode
+      adj_ode ? adj_ode + nrx1_ * nadj_ : 0;  // fwd:adj_ode
     m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_ADJ_ALG] =
-      rz ? rz + nrz1_ * nadj_ : 0;  // fwd:adj_alg
-    m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_ADJ_QUAD] = m->rp + nrp1_ * nadj_;  // fwd:adj_quad
+      adj_alg ? adj_alg + nrz1_ * nadj_ : 0;  // fwd:adj_alg
+    m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_ADJ_QUAD] = m->adj_q + nrp1_ * nadj_;  // fwd:adj_quad
+    m->arg[BDYN_NUM_IN + BQUAD_NUM_OUT + BDYN_ADJ_ZERO] = nullptr;  // fwd:adj_zero
     m->res[BQUAD_ADJ_P] = adj_p + nrq1_ * nadj_;  // fwd:adj_p
     m->res[BQUAD_ADJ_U] = adj_u + nuq1_ * nadj_;  // fwd:adj_u
     if (calc_function(m, forward_name("quadB", nfwd_))) return 1;

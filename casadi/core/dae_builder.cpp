@@ -53,108 +53,168 @@ DaeBuilder::DaeBuilder() {
 
 DaeBuilder::DaeBuilder(const std::string& name, const std::string& path, const Dict& opts) {
   own(new DaeBuilderInternal(name, path, opts));
-  if (!path.empty()) load_fmi_description(path + "/modelDescription.xml");
+  if (!path.empty()) load_fmi_description((*this)->resource_.path() + "/modelDescription.xml");
 }
 
 const std::string& DaeBuilder::name() const {
   return (*this)->name_;
 }
 
-const MX& DaeBuilder::t() const {
-  return var((*this)->t_.at(0));
-}
-
-std::vector<std::string> DaeBuilder::x() const {
-  return name((*this)->x_);
-}
-
-std::vector<MX> DaeBuilder::ode() const {
-  return (*this)->ode();
-}
-
-std::vector<std::string> DaeBuilder::z() const {
-  return name((*this)->z_);
-}
-
-std::vector<MX> DaeBuilder::alg() const {
-  return (*this)->alg();
-}
-
-std::vector<std::string> DaeBuilder::q() const {
-  return name((*this)->q_);
-}
-
-std::vector<MX> DaeBuilder::quad() const {
-  return (*this)->quad();
+const MX& DaeBuilder::time() const {
+  try {
+    return (*this)->time();
+  } catch (std::exception& e) {
+    THROW_ERROR("time", e.what());
+    static const MX t;
+    return t;  // never reached
+  }
 }
 
 std::vector<std::string> DaeBuilder::y() const {
-  return name((*this)->y_);
+  try {
+    return (*this)->name((*this)->outputs_);
+  } catch (std::exception& e) {
+    THROW_ERROR("y", e.what());
+    return {};  // never reached
+  }
+}
+
+std::vector<MX> DaeBuilder::ode() const {
+  try {
+    return (*this)->output(OutputCategory::ODE);
+  } catch (std::exception& e) {
+    THROW_ERROR("ode", e.what());
+    return {};  // never reached
+  }
+}
+
+std::vector<MX> DaeBuilder::alg() const {
+  try {
+    return (*this)->output(OutputCategory::ALG);
+  } catch (std::exception& e) {
+    THROW_ERROR("alg", e.what());
+    return {};  // never reached
+  }
+}
+
+std::vector<MX> DaeBuilder::quad() const {
+  try {
+    return (*this)->output(OutputCategory::QUAD);
+  } catch (std::exception& e) {
+    THROW_ERROR("quad", e.what());
+    return {};  // never reached
+  }
+}
+
+std::vector<MX> DaeBuilder::zero() const {
+  try {
+    return (*this)->output(OutputCategory::ZERO);
+  } catch (std::exception& e) {
+    THROW_ERROR("zero", e.what());
+  }
 }
 
 std::vector<MX> DaeBuilder::ydef() const {
-  return (*this)->ydef();
+  try {
+    return (*this)->output(OutputCategory::Y);
+  } catch (std::exception& e) {
+    THROW_ERROR("ydef", e.what());
+    return {};  // never reached
+  }
 }
 
-std::vector<std::string> DaeBuilder::u() const {
-  return name((*this)->u_);
+void DaeBuilder::set_y(const std::vector<std::string>& name) {
+  try {
+    // Update causality of any existing outputs not in name
+    std::set<std::string> name_set(name.begin(), name.end());
+    casadi_assert(name_set.size() == name.size(), "Duplicate names");
+    for (auto&& n : y()) {
+      auto it = name_set.find(n);
+      if (it == name_set.end()) {
+        // Not an output anymore, make local
+        set_causality(n, "local");
+      } else {
+        // Mark as added
+        name_set.erase(it);
+      }
+    }
+    // Update causality of new outputs
+    for (auto&& n : name) {
+      // Check if not already added
+      auto it = name_set.find(n);
+      if (it != name_set.end()) {
+        // Make output causality
+        set_causality(n, "output");
+        // Mark as added
+        name_set.erase(it);
+      }
+    }
+    // Consistency checks
+    casadi_assert_dev(name_set.empty());
+    casadi_assert_dev((*this)->outputs_.size() == name.size());
+    // Update output ordering
+    (*this)->outputs_ = (*this)->find(name);
+  } catch (std::exception& e) {
+    THROW_ERROR("set_rate", e.what());
+  }
 }
 
-std::vector<std::string> DaeBuilder::p() const {
-  return name((*this)->p_);
+std::vector<std::string> DaeBuilder::rate() const {
+  try {
+    return (*this)->name((*this)->rate_);
+  } catch (std::exception& e) {
+    THROW_ERROR("rate", e.what());
+    return {};  // never reached
+  }
 }
 
-std::vector<std::string> DaeBuilder::c() const {
-  return name((*this)->c_);
+void DaeBuilder::set_rate(const std::vector<std::string>& name) {
+  try {
+    casadi_assert(name.size() <= 1, "At most one rate variable");
+    (*this)->rate_ = (*this)->find(name);
+  } catch (std::exception& e) {
+    THROW_ERROR("set_rate", e.what());
+  }
 }
 
 std::vector<MX> DaeBuilder::cdef() const {
-  return (*this)->cdef();
-}
-
-std::vector<std::string> DaeBuilder::d() const {
-  return name((*this)->d_);
+  try {
+    return (*this)->cdef();
+  } catch (std::exception& e) {
+    THROW_ERROR("cdef", e.what());
+    return {};  // never reached
+  }
 }
 
 std::vector<MX> DaeBuilder::ddef() const {
-  return (*this)->ddef();
-}
-
-std::vector<std::string> DaeBuilder::w() const {
-  return name((*this)->w_);
+  try {
+    return (*this)->output(OutputCategory::DDEF);
+  } catch (std::exception& e) {
+    THROW_ERROR("ddef", e.what());
+    return {};  // never reached
+  }
 }
 
 std::vector<MX> DaeBuilder::wdef() const {
-  return (*this)->wdef();
+  try {
+    return (*this)->output(OutputCategory::WDEF);
+  } catch (std::exception& e) {
+    THROW_ERROR("wdef", e.what());
+    return {};  // never reached
+  }
 }
 
-const std::vector<MX>& DaeBuilder::aux() const {
-  return (*this)->aux_;
+std::vector<MX> DaeBuilder::init_lhs() const {
+  return (*this)->init_lhs();
 }
 
-const std::vector<MX>& DaeBuilder::init_lhs() const {
-  return (*this)->init_lhs_;
-}
-
-const std::vector<MX>& DaeBuilder::init_rhs() const {
-  return (*this)->init_rhs_;
-}
-
-const std::vector<MX>& DaeBuilder::when_cond() const {
-  return (*this)->when_cond_;
-}
-
-const std::vector<MX>& DaeBuilder::when_lhs() const {
-  return (*this)->when_lhs_;
-}
-
-const std::vector<MX>& DaeBuilder::when_rhs() const {
-  return (*this)->when_rhs_;
+std::vector<MX> DaeBuilder::init_rhs() const {
+  return (*this)->init_rhs();
 }
 
 std::vector<std::string> DaeBuilder::outputs() const {
   try {
-    return name((*this)->outputs_);
+    return (*this)->name((*this)->outputs_);
   } catch (std::exception& e) {
     THROW_ERROR("outputs", e.what());
     return {};  // never reached
@@ -163,7 +223,7 @@ std::vector<std::string> DaeBuilder::outputs() const {
 
 std::vector<std::string> DaeBuilder::derivatives() const {
   try {
-    return name((*this)->derivatives_);
+    return (*this)->name((*this)->derivatives_);
   } catch (std::exception& e) {
     THROW_ERROR("derivatives", e.what());
     return {};  // never reached
@@ -172,7 +232,7 @@ std::vector<std::string> DaeBuilder::derivatives() const {
 
 std::vector<std::string> DaeBuilder::initial_unknowns() const {
   try {
-    return name((*this)->initial_unknowns_);
+    return (*this)->name((*this)->initial_unknowns_);
   } catch (std::exception& e) {
     THROW_ERROR("initial_unknowns", e.what());
     return {};  // never reached
@@ -180,43 +240,61 @@ std::vector<std::string> DaeBuilder::initial_unknowns() const {
 }
 
 bool DaeBuilder::has_t() const {
-  return !(*this)->t_.empty();
+  try {
+    return (*this)->has_t();
+  } catch (std::exception& e) {
+    THROW_ERROR("has_t", e.what());
+    return false;  // never reached
+  }
+}
+
+bool DaeBuilder::has_rate() const {
+  try {
+    return !(*this)->rate_.empty();
+  } catch (std::exception& e) {
+    THROW_ERROR("has_rate", e.what());
+    return false;  // never reached
+  }
 }
 
 casadi_int DaeBuilder::nx() const {
-  return (*this)->x_.size();
+  return (*this)->size(Category::X);
 }
 
 casadi_int DaeBuilder::nz() const {
-  return (*this)->z_.size();
+  return (*this)->size(Category::Z);
 }
 
 casadi_int DaeBuilder::nq() const {
-  return (*this)->q_.size();
+  return (*this)->size(Category::Q);
+}
+
+casadi_int DaeBuilder::nzero() const {
+  return (*this)->event_indicators_.size();
 }
 
 casadi_int DaeBuilder::ny() const {
-  return (*this)->y_.size();
+  return (*this)->outputs_.size();
 }
 
 casadi_int DaeBuilder::nu() const {
-  return (*this)->u_.size();
+  return (*this)->size(Category::U);
 }
 
 casadi_int DaeBuilder::np() const {
-  return (*this)->p_.size();
+  return (*this)->size(Category::P);
 }
 
 casadi_int DaeBuilder::nc() const {
-  return (*this)->c_.size();
+  return (*this)->size(Category::C);
 }
 
 casadi_int DaeBuilder::nd() const {
-  return (*this)->d_.size();
+  return (*this)->size(Category::D);
 }
 
 casadi_int DaeBuilder::nw() const {
-  return (*this)->w_.size();
+  return (*this)->size(Category::W);
 }
 
 void DaeBuilder::load_fmi_description(const std::string& filename) {
@@ -227,12 +305,12 @@ void DaeBuilder::load_fmi_description(const std::string& filename) {
   }
 }
 
-bool DaeBuilder::provides_directional_derivative() const {
+bool DaeBuilder::provides_directional_derivatives() const {
   try {
     casadi_assert(!(*this)->symbolic_, "Functionality only applies to imported standard FMUs");
-    return (*this)->provides_directional_derivative_;
+    return (*this)->provides_directional_derivatives_;
   } catch (std::exception& e) {
-    THROW_ERROR("provides_directional_derivative", e.what());
+    THROW_ERROR("provides_directional_derivatives", e.what());
     return false;
   }
 }
@@ -242,38 +320,6 @@ std::vector<std::string> DaeBuilder::export_fmu(const Dict& opts) {
     return (*this)->export_fmu(opts);
   } catch (std::exception& e) {
     THROW_ERROR("export_fmu", e.what());
-  }
-}
-
-void DaeBuilder::eliminate_quad() {
-  try {
-    (*this)->eliminate_quad();
-  } catch (std::exception& e) {
-    THROW_ERROR("eliminate_quad", e.what());
-  }
-}
-
-void DaeBuilder::sort_d() {
-  try {
-    (*this)->sort_d();
-  } catch (std::exception& e) {
-    THROW_ERROR("sort_d", e.what());
-  }
-}
-
-void DaeBuilder::sort_w() {
-  try {
-    (*this)->sort_w();
-  } catch (std::exception& e) {
-    THROW_ERROR("sort_w", e.what());
-  }
-}
-
-void DaeBuilder::sort_z(const std::vector<std::string>& z_order) {
-  try {
-    (*this)->sort_z(z_order);
-  } catch (std::exception& e) {
-    THROW_ERROR("sort_z", e.what());
   }
 }
 
@@ -293,29 +339,126 @@ void DaeBuilder::tear() {
   }
 }
 
-bool DaeBuilder::has_variable(const std::string& name) const {
+bool DaeBuilder::has(const std::string& name) const {
   try {
-    return (*this)->has_variable(name);
+    return (*this)->has(name);
   } catch (std::exception& e) {
-    THROW_ERROR("has_variable", e.what());
+    THROW_ERROR("has", e.what());
     return false;  // never reached
   }
 }
 
-std::vector<std::string> DaeBuilder::all_variables() const {
+std::vector<std::string> DaeBuilder::all() const {
   try {
-    return (*this)->all_variables();
+    return (*this)->all();
   } catch (std::exception& e) {
-    THROW_ERROR("all_variables", e.what());
+    THROW_ERROR("all", e.what());
     return {};  // never reached
   }
 }
 
+std::vector<std::string> DaeBuilder::all(const std::string& cat) const {
+  try {
+    return (*this)->all(to_enum<Category>(cat));
+  } catch (std::exception& e) {
+    THROW_ERROR("all", e.what());
+    return {};  // never reached
+  }
+}
+
+#ifdef WITH_DEPRECATED_FEATURES
 Variable& DaeBuilder::new_variable(const std::string& name, casadi_int numel) {
   try {
-    return (*this)->new_variable(name, numel);
+    return (*this)->new_variable(name, {numel});
   } catch (std::exception& e) {
     THROW_ERROR("new_variable", e.what());
+  }
+}
+
+Variable& DaeBuilder::variable(const std::string& name) {
+  try {
+    return (*this)->variable(name);
+  } catch (std::exception& e) {
+    THROW_ERROR("variable", e.what());
+  }
+}
+
+const Variable& DaeBuilder::variable(const std::string& name) const {
+  try {
+    return (*this)->variable(name);
+  } catch (std::exception& e) {
+    THROW_ERROR("variable", e.what());
+  }
+}
+
+Variable& DaeBuilder::variable(size_t ind) {
+  try {
+    return (*this)->variable(ind);
+  } catch (std::exception& e) {
+    THROW_ERROR("variable", e.what());
+  }
+}
+
+const Variable& DaeBuilder::variable(size_t ind) const {
+  try {
+    return (*this)->variable(ind);
+  } catch (std::exception& e) {
+    THROW_ERROR("variable", e.what());
+  }
+}
+
+size_t DaeBuilder::find(const std::string& name) const {
+  try {
+    return (*this)->find(name);
+  } catch (std::exception& e) {
+    THROW_ERROR("find", e.what());
+    return -1; // never reached
+  }
+}
+
+std::vector<size_t> DaeBuilder::find(const std::vector<std::string>& name) const {
+  try {
+    return (*this)->find(name);
+  } catch (std::exception& e) {
+    THROW_ERROR("find", e.what());
+    return {}; // never reached
+  }
+}
+
+const std::string& DaeBuilder::name(size_t ind) const {
+  try {
+    return (*this)->name(ind);
+  } catch (std::exception& e) {
+    THROW_ERROR("name", e.what());
+    static std::string dummy;
+    return dummy; // never reached
+  }
+}
+
+std::vector<std::string> DaeBuilder::name(const std::vector<size_t>& ind) const {
+  try {
+    return (*this)->name(ind);
+  } catch (std::exception& e) {
+    THROW_ERROR("name", e.what());
+    return {}; // never reached
+  }
+}
+const MX& DaeBuilder::var(size_t ind) const {
+  try {
+    return (*this)->var(ind);
+  } catch (std::exception& e) {
+    THROW_ERROR("var", e.what());
+    static MX dummy;
+    return dummy; // never reached
+  }
+}
+
+std::vector<MX> DaeBuilder::var(const std::vector<size_t>& ind) const {
+  try {
+    return (*this)->var(ind);
+  } catch (std::exception& e) {
+    THROW_ERROR("var", e.what());
+    return {}; // never reached
   }
 }
 
@@ -353,67 +496,101 @@ size_t DaeBuilder::add_variable_new(const MX& new_v) {
 void DaeBuilder::register_t(const std::string& name) {
   // Save to class
   casadi_assert(!has_t(), "'t' already defined");
-  (*this)->t_.push_back(find(name));
+  (*this)->indices(Category::T).push_back(find(name));
 }
 
 void DaeBuilder::register_p(const std::string& name) {
-  (*this)->p_.push_back(find(name));
+  (*this)->indices(Category::P).push_back(find(name));
 }
 
 void DaeBuilder::register_u(const std::string& name) {
-  (*this)->u_.push_back(find(name));
+  (*this)->indices(Category::U).push_back(find(name));
 }
 
 void DaeBuilder::register_x(const std::string& name) {
-  (*this)->x_.push_back(find(name));
+  (*this)->indices(Category::X).push_back(find(name));
 }
 
 void DaeBuilder::register_z(const std::string& name) {
-  (*this)->z_.push_back(find(name));
+  (*this)->indices(Category::Z).push_back(find(name));
 }
 
 void DaeBuilder::register_q(const std::string& name) {
-  (*this)->q_.push_back(find(name));
+  (*this)->indices(Category::Q).push_back(find(name));
 }
 
 void DaeBuilder::register_c(const std::string& name) {
-  (*this)->c_.push_back(find(name));
+  (*this)->indices(Category::C).push_back(find(name));
 }
 
 void DaeBuilder::register_d(const std::string& name) {
-  (*this)->d_.push_back(find(name));
+  (*this)->indices(Category::D).push_back(find(name));
 }
 
 void DaeBuilder::register_w(const std::string& name) {
-  (*this)->w_.push_back(find(name));
+  (*this)->indices(Category::W).push_back(find(name));
 }
 
 void DaeBuilder::register_y(const std::string& name) {
-  (*this)->y_.push_back(find(name));
+  (*this)->outputs_.push_back(find(name));
 }
 
-void DaeBuilder::set_z(const std::vector<std::string>& name, const std::vector<std::string>& alg) {
+void DaeBuilder::register_e(const std::string& name) {
+  (*this)->event_indicators_.push_back(find(name));
+}
+
+void DaeBuilder::eliminate_d() {
   try {
-    // Consistency check
-    if (!alg.empty()) {
-      casadi_assert(alg.size() == name.size(), "Inconsistent number of algebraic variables");
-    }
-
-    // Update z
-    set_all("z", name);
-
-    // Update algebraic equations
-    if (!alg.empty()) {
-      for (size_t i = 0; i < name.size(); ++i) variable(name[i]).alg = find(alg[i]);
-    }
+    return eliminate("d");
   } catch (std::exception& e) {
-    THROW_ERROR("set_z", e.what());
+    THROW_ERROR("eliminate_d", e.what());
+  }
+}
+
+void DaeBuilder::eliminate_w() {
+  try {
+    return eliminate("w");
+  } catch (std::exception& e) {
+    THROW_ERROR("eliminate_w", e.what());
+  }
+}
+
+void DaeBuilder::eliminate_quad() {
+  try {
+    return eliminate("q");
+  } catch (std::exception& e) {
+    THROW_ERROR("eliminate_quad", e.what());
+  }
+}
+
+void DaeBuilder::sort_d() {
+  try {
+    return sort("d");
+  } catch (std::exception& e) {
+    THROW_ERROR("sort_d", e.what());
+  }
+}
+
+void DaeBuilder::sort_w() {
+  try {
+    return sort("w");
+  } catch (std::exception& e) {
+    THROW_ERROR("sort_w", e.what());
+  }
+}
+
+void DaeBuilder::sort_z(const std::vector<std::string>& z_order) {
+  try {
+    return reorder("z", z_order);
+  } catch (std::exception& e) {
+    THROW_ERROR("sort_z", e.what());
   }
 }
 
 void DaeBuilder::clear_all(const std::string& v) {
   try {
-    (*this)->clear_all(v);
+    (*this)->clear_cache_ = true;  // Clear cache after this
+    (*this)->indices(to_enum<Category>(v)).clear();
   } catch (std::exception& e) {
     THROW_ERROR("clear_all", e.what());
   }
@@ -421,130 +598,182 @@ void DaeBuilder::clear_all(const std::string& v) {
 
 void DaeBuilder::set_all(const std::string& v, const std::vector<std::string>& name) {
   try {
-    (*this)->set_all(v, name);
+    (*this)->clear_cache_ = true;  // Clear cache after this
+    const std::vector<size_t>& new_ind = (*this)->find(name);
+    if (v == "y") {
+      (*this)->outputs_ = new_ind;
+    } else {
+      (*this)->indices(to_enum<Category>(v)) = new_ind;
+    }
   } catch (std::exception& e) {
     THROW_ERROR("set_all", e.what());
   }
 }
 
+#endif // WITH_DEPRECATED_FEATURES
+
+void DaeBuilder::reorder(const std::string& cat, const std::vector<std::string>& v) {
+  try {
+    auto vind = (*this)->find(v);
+    if (cat == "y") {
+      // Reorder outputs
+      (*this)->reorder("y", (*this)->outputs_, vind);
+    } else {
+      // Reorder inputs
+      (*this)->reorder(to_enum<Category>(cat), vind);
+    }
+  } catch (std::exception& e) {
+    THROW_ERROR("reorder", e.what());
+  }
+}
+
+MX DaeBuilder::add(const std::string& name, const std::string& causality,
+    const std::string& variability, const Dict& opts) {
+  try {
+    return (*this)->add(name, to_enum<Causality>(causality),
+      to_enum<Variability>(variability), opts).v;
+  } catch (std::exception& e) {
+    THROW_ERROR("add", e.what());
+    return MX();
+  }
+}
+
+MX DaeBuilder::add(const std::string& name, const std::string& causality, const Dict& opts) {
+  try {
+    return (*this)->add(name, to_enum<Causality>(causality), opts).v;
+  } catch (std::exception& e) {
+    THROW_ERROR("add", e.what());
+    return MX();
+  }
+}
+
+MX DaeBuilder::add(const std::string& name, const Dict& opts) {
+  try {
+    return (*this)->add(name, opts).v;
+  } catch (std::exception& e) {
+    THROW_ERROR("add", e.what());
+    return MX();
+  }
+}
+
+void DaeBuilder::add(const std::string& name, const std::string& causality,
+  const std::string& variability, const MX& expr, const Dict& opts) {
+  try {
+    // Ensure pure symbolic expression
+    casadi_assert(expr.is_symbolic(), "Expression must be symbolic");
+    // Make sure name matches expression
+    casadi_assert(name == expr.name(), "Name must match expression");
+    // Add variable
+    (*this)->add(name, to_enum<Causality>(causality), to_enum<Variability>(variability),
+      expr, opts);
+  } catch (std::exception& e) {
+    THROW_ERROR("add", e.what());
+  }
+}
+
+#ifdef WITH_DEPRECATED_FEATURES
 MX DaeBuilder::add_t(const std::string& name) {
-  casadi_assert((*this)->t_.empty(), "'t' already defined");
-  size_t new_t = add_variable_new(name);
-  (*this)->t_.push_back(new_t);
-  return var(new_t);
+  return add(name, "independent");
 }
 
 MX DaeBuilder::add_p(const std::string& name) {
-  try {
-    return (*this)->add_p(name);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_p", e.what());
-    return MX();
-  }
+  casadi_assert(!name.empty(), "Variable name is required");
+  return add(name, "parameter", "tunable");
 }
 
 MX DaeBuilder::add_u(const std::string& name) {
-  try {
-    return (*this)->add_u(name);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_u", e.what());
-    return MX();
-  }
+  casadi_assert(!name.empty(), "Variable name is required");
+  return add(name, "input");
 }
 
 MX DaeBuilder::add_x(const std::string& name) {
-  try {
-    return (*this)->add_x(name);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_x", e.what());
-    return MX();
-  }
+  casadi_assert(!name.empty(), "Variable name is required");
+  return add(name);
 }
 
 MX DaeBuilder::add_z(const std::string& name) {
-  try {
-    return (*this)->add_z(name);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_z", e.what());
-    return MX();
-  }
+  casadi_assert(!name.empty(), "Variable name is required");
+  return add(name);
 }
 
 MX DaeBuilder::add_q(const std::string& name) {
-  try {
-    return (*this)->add_q(name);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_q", e.what());
-    return MX();
-  }
+  casadi_assert(!name.empty(), "Variable name is required");
+  return add(name);
 }
 
 MX DaeBuilder::add_c(const std::string& name, const MX& new_cdef) {
-  try {
-    return (*this)->add_c(name, new_cdef);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_c", e.what());
-    return MX();
-  }
+  MX v = add(name, "local", "constant");
+  set_beq(name, new_cdef);
+  return v;
 }
 
 MX DaeBuilder::add_d(const std::string& name, const MX& new_ddef) {
-  try {
-    return (*this)->add_d(name, new_ddef);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_d", e.what());
-    return MX();
-  }
+  MX v = add(name, "calculatedParameter", "fixed");
+  set_beq(name, new_ddef);
+  return v;
 }
 
 MX DaeBuilder::add_w(const std::string& name, const MX& new_wdef) {
-  try {
-    return (*this)->add_w(name, new_wdef);
-  } catch (std::exception& e) {
-    THROW_ERROR("add_w", e.what());
-    return MX();
-  }
+  MX v = add(name);
+  eq(v, new_wdef);
+  return v;
 }
 
 MX DaeBuilder::add_y(const std::string& name, const MX& new_ydef) {
+  MX v = add(name, "output");
+  eq(v, new_ydef);
+  return v;
+}
+
+void DaeBuilder::set_beq(const std::string& name, const MX& val) {
   try {
-    return (*this)->add_y(name, new_ydef);
+    eq(var(name), val);
   } catch (std::exception& e) {
-    THROW_ERROR("add_y", e.what());
-    return MX();
+    THROW_ERROR("set_beq", e.what());
   }
 }
 
-MX DaeBuilder::add_aux(const std::string& name, casadi_int n) {
-  MX new_aux = add_variable(name, n);
-  (*this)->aux_.push_back(new_aux);
-  return new_aux;
-}
+#endif  // WITH_DEPRECATED_FEATURES
 
-void DaeBuilder::add_init(const MX& lhs, const MX& rhs) {
-  (*this)->init_lhs_.push_back(lhs);
-  (*this)->init_rhs_.push_back(rhs);
-}
-
-void DaeBuilder::add_when(const MX& cond, const MX& lhs, const MX& rhs) {
-  (*this)->when_cond_.push_back(cond);
-  (*this)->when_lhs_.push_back(lhs);
-  (*this)->when_rhs_.push_back(rhs);
-}
-
-void DaeBuilder::set_ode(const std::string& name, const MX& ode_rhs) {
+void DaeBuilder::eq(const MX& lhs, const MX& rhs, const Dict& opts) {
   try {
-    (*this)->set_ode(name, ode_rhs);
+    (*this)->eq(lhs, rhs, opts);
   } catch (std::exception& e) {
-    THROW_ERROR("set_ode", e.what());
+    THROW_ERROR("eq", e.what());
   }
 }
 
-void DaeBuilder::set_alg(const std::string& name, const MX& alg_rhs) {
+void DaeBuilder::when(const MX& cond, const std::vector<std::string>& eqs, const Dict& opts) {
   try {
-    (*this)->set_alg(name, alg_rhs);
+    (*this)->when(cond, eqs, opts);
   } catch (std::exception& e) {
-    THROW_ERROR("set_alg", e.what());
+    THROW_ERROR("when", e.what());
+  }
+}
+
+std::string DaeBuilder::assign(const std::string& name, const MX& val) {
+  try {
+    return (*this)->assign(name, val).name;
+  } catch (std::exception& e) {
+    THROW_ERROR("assign", e.what());
+    return std::string();  // never reached
+  }
+}
+
+std::string DaeBuilder::reinit(const std::string& name, const MX& val) {
+  try {
+    return (*this)->reinit(name, val).name;
+  } catch (std::exception& e) {
+    THROW_ERROR("reinit", e.what());
+    return std::string();  // never reached
+  }
+}
+
+void DaeBuilder::set_init(const std::string& name, const MX& init_rhs) {
+  try {
+    (*this)->set_init(name, init_rhs);
+  } catch (std::exception& e) {
+    THROW_ERROR("set_init", e.what());
   }
 }
 
@@ -558,7 +787,7 @@ void DaeBuilder::sanity_check() const {
 
 MX DaeBuilder::var(const std::string& name) const {
   try {
-    return variable(name).v;
+    return (*this)->variable(name).v;
   } catch (std::exception& e) {
     THROW_ERROR("var", e.what());
     return MX();  // never reached
@@ -568,15 +797,45 @@ MX DaeBuilder::var(const std::string& name) const {
 std::string DaeBuilder::der(const std::string& name) const {
   try {
     // Get variable index
-    size_t ind = find(name);
+    size_t ind = (*this)->find(name);
     // Differentiate
-    ind = variable(ind).der;
+    ind = (*this)->variable(ind).der;
     casadi_assert(ind != size_t(-1), "No derivative expression for " + name);
     // Return name
-    return variable(ind).name;
+    return (*this)->variable(ind).name;
   } catch (std::exception& e) {
     THROW_ERROR("der", e.what());
     return std::string();  // never reached
+  }
+}
+
+std::string DaeBuilder::pre(const std::string& name) const {
+  try {
+    // Not implemented
+    static bool warned = false;
+    if (!warned) {
+      casadi_warning("DaeBuilder::pre has not been implemented: Returning identity mapping");
+      warned = true;
+    }
+    return name;
+  } catch (std::exception& e) {
+    THROW_ERROR("pre", e.what());
+    return std::string();  // never reached
+  }
+}
+
+MX DaeBuilder::pre(const MX& v) const {
+  try {
+    // Not implemented
+    static bool warned = false;
+    if (!warned) {
+      casadi_warning("DaeBuilder::pre has not been implemented: Returning identity mapping");
+      warned = true;
+    }
+    return v;
+  } catch (std::exception& e) {
+    THROW_ERROR("pre", e.what());
+    return MX();  // never reached
   }
 }
 
@@ -591,28 +850,49 @@ std::vector<std::string> DaeBuilder::der(const std::vector<std::string>& name) c
   }
 }
 
+std::vector<std::string> DaeBuilder::pre(const std::vector<std::string>& name) const {
+  try {
+    std::vector<std::string> r(name.size());
+    for (size_t i = 0; i < r.size(); ++i) r[i] = pre(name[i]);
+    return r;
+  } catch (std::exception& e) {
+    THROW_ERROR("pre", e.what());
+    return {};  // never reached
+  }
+}
+
+bool DaeBuilder::has_beq(const std::string& name) const {
+  try {
+    return !(*this)->variable(name).has_beq();
+  } catch (std::exception& e) {
+    THROW_ERROR("has_beq", e.what());
+    return false;  // never reached
+  }
+}
+
 MX DaeBuilder::beq(const std::string& name) const {
   try {
-    return variable(name).beq;
+    const Variable& v = (*this)->variable(name);
+    return (*this)->variable(v.bind).v;
   } catch (std::exception& e) {
     THROW_ERROR("beq", e.what());
     return MX();  // never reached
   }
 }
 
-void DaeBuilder::set_beq(const std::string& name, const MX& val) {
+void DaeBuilder::eliminate(const std::string& cat) {
   try {
-    variable(name).beq = val;
+    return (*this)->eliminate(to_enum<Category>(cat));
   } catch (std::exception& e) {
-    THROW_ERROR("set_beq", e.what());
+    THROW_ERROR("eliminate", e.what());
   }
 }
 
-void DaeBuilder::eliminate_w() {
+void DaeBuilder::sort(const std::string& cat) {
   try {
-    (*this)->eliminate_w();
+    return (*this)->sort(to_enum<Category>(cat));
   } catch (std::exception& e) {
-    THROW_ERROR("eliminate_w", e.what());
+    THROW_ERROR("sort", e.what());
   }
 }
 
@@ -625,19 +905,19 @@ void DaeBuilder::lift(bool lift_shared, bool lift_calls) {
 }
 
 casadi_int DaeBuilder::value_reference(const std::string& name) const {
-  return variable(name).value_reference;
+  return (*this)->variable(name).value_reference;
 }
 
 void DaeBuilder::set_value_reference(const std::string& name, casadi_int val) {
-  variable(name).value_reference = val;
+  (*this)->variable(name).value_reference = val;
 }
 
 std::string DaeBuilder::description(const std::string& name) const {
-  return variable(name).description;
+  return (*this)->variable(name).description;
 }
 
 void DaeBuilder::set_description(const std::string& name, const std::string& val) {
-  variable(name).description = val;
+  (*this)->variable(name).description = val;
 }
 
 std::string DaeBuilder::type(const std::string& name, casadi_int fmi_version) const {
@@ -645,67 +925,170 @@ std::string DaeBuilder::type(const std::string& name, casadi_int fmi_version) co
   casadi_assert(fmi_version == 2 || fmi_version == 3, "Only FMI version 2 or 3 supported");
   // Handle FMI 2
   if (fmi_version == 2) {
-    return to_string(to_fmi2(variable(name).type));
+    return to_string(to_fmi2((*this)->variable(name).type));
   }
   // Assume FMI 3
-  return to_string(variable(name).type);
+  return to_string((*this)->variable(name).type);
 }
 
 void DaeBuilder::set_type(const std::string& name, const std::string& val) {
   // Fallback to FMI 2, if necessary
   if (has_enum<TypeFmi2>(val) && !has_enum<Type>(val)) {
-    variable(name).type = from_fmi2(to_enum<TypeFmi2>(val));
+    (*this)->variable(name).type = from_fmi2(to_enum<TypeFmi2>(val));
   }
   // Assume FMI 3
-  variable(name).type = to_enum<Type>(val);
+  (*this)->variable(name).type = to_enum<Type>(val);
 }
 
 std::string DaeBuilder::causality(const std::string& name) const {
-  return to_string(variable(name).causality);
+  try {
+    return to_string((*this)->causality((*this)->find(name)));
+  } catch (std::exception& e) {
+    THROW_ERROR("causality", e.what());
+    return std::string();  // never reached
+  }
 }
 
 void DaeBuilder::set_causality(const std::string& name, const std::string& val) {
-  variable(name).causality = to_enum<Causality>(val);
+  try {
+    (*this)->set_causality((*this)->find(name), to_enum<Causality>(val));
+  } catch (std::exception& e) {
+    THROW_ERROR("set_causality", e.what());
+  }
 }
 
 std::string DaeBuilder::variability(const std::string& name) const {
-  return to_string(variable(name).variability);
+  try {
+    return to_string((*this)->variability((*this)->find(name)));
+  } catch (std::exception& e) {
+    THROW_ERROR("variability", e.what());
+    return std::string();  // never reached
+  }
 }
 
 void DaeBuilder::set_variability(const std::string& name, const std::string& val) {
-  variable(name).variability = to_enum<Variability>(val);
+  try {
+    (*this)->set_variability((*this)->find(name), to_enum<Variability>(val));
+  } catch (std::exception& e) {
+    THROW_ERROR("set_variability", e.what());
+  }
+}
+
+std::string DaeBuilder::category(const std::string& name) const {
+  try {
+    return to_string((*this)->category((*this)->find(name)));
+  } catch (std::exception& e) {
+    THROW_ERROR("category", e.what());
+    return std::string();  // never reached
+  }
+}
+
+void DaeBuilder::set_category(const std::string& name, const std::string& val) {
+  try {
+    (*this)->set_category((*this)->find(name), to_enum<Category>(val));
+  } catch (std::exception& e) {
+    THROW_ERROR("set_category", e.what());
+  }
 }
 
 std::string DaeBuilder::initial(const std::string& name) const {
-  return to_string(variable(name).initial);
+  return to_string((*this)->variable(name).initial);
 }
 
 void DaeBuilder::set_initial(const std::string& name, const std::string& val) {
-  variable(name).initial = to_enum<Initial>(val);
+  (*this)->variable(name).initial = to_enum<Initial>(val);
 }
 
 std::string DaeBuilder::unit(const std::string& name) const {
-  return variable(name).unit;
+  return (*this)->variable(name).unit;
 }
 
 void DaeBuilder::set_unit(const std::string& name, const std::string& val) {
-  variable(name).unit = val;
+  (*this)->variable(name).unit = val;
 }
 
 std::string DaeBuilder::display_unit(const std::string& name) const {
-  return variable(name).display_unit;
+  return (*this)->variable(name).display_unit;
 }
 
 void DaeBuilder::set_display_unit(const std::string& name, const std::string& val) {
-  variable(name).display_unit = val;
+  (*this)->variable(name).display_unit = val;
 }
 
 casadi_int DaeBuilder::numel(const std::string& name) const {
-  return variable(name).numel;
+  return (*this)->variable(name).numel;
 }
 
 std::vector<casadi_int> DaeBuilder::dimension(const std::string& name) const {
-  return variable(name).dimension;
+  return (*this)->variable(name).dimension;
+}
+
+double DaeBuilder::start_time() const {
+  try {
+    return (*this)->start_time_;
+  } catch (std::exception& e) {
+    THROW_ERROR("start_time", e.what());
+    return nan;
+  }
+}
+
+void DaeBuilder::set_start_time(double val) {
+  try {
+    (*this)->start_time_ = val;
+  } catch (std::exception& e) {
+    THROW_ERROR("set_start_time", e.what());
+  }
+}
+
+double DaeBuilder::stop_time() const {
+  try {
+    return (*this)->stop_time_;
+  } catch (std::exception& e) {
+    THROW_ERROR("stop_time", e.what());
+    return nan;
+  }
+}
+
+void DaeBuilder::set_stop_time(double val) {
+  try {
+    (*this)->stop_time_ = val;
+  } catch (std::exception& e) {
+    THROW_ERROR("set_stop_time", e.what());
+  }
+}
+
+double DaeBuilder::tolerance() const {
+  try {
+    return (*this)->tolerance_;
+  } catch (std::exception& e) {
+    THROW_ERROR("tolerance", e.what());
+    return nan;
+  }
+}
+
+void DaeBuilder::set_tolerance(double val) {
+  try {
+    (*this)->tolerance_ = val;
+  } catch (std::exception& e) {
+    THROW_ERROR("set_tolerance", e.what());
+  }
+}
+
+double DaeBuilder::step_size() const {
+  try {
+    return (*this)->step_size_;
+  } catch (std::exception& e) {
+    THROW_ERROR("step_size", e.what());
+    return nan;
+  }
+}
+
+void DaeBuilder::set_step_size(double val) {
+  try {
+    (*this)->step_size_ = val;
+  } catch (std::exception& e) {
+    THROW_ERROR("set_step_size", e.what());
+  }
 }
 
 void DaeBuilder::add_lc(const std::string& name,
@@ -835,35 +1218,21 @@ Function DaeBuilder::dependent_fun(const std::string& fname,
   }
 }
 
-Variable& DaeBuilder::variable(const std::string& name) {
+Function DaeBuilder::transition(const std::string& fname, casadi_int index) const {
   try {
-    return (*this)->variable(name);
+    return (*this)->transition(fname, index);
   } catch (std::exception& e) {
-    THROW_ERROR("variable", e.what());
+    THROW_ERROR("transition", e.what());
+    return Function(); // never reached
   }
 }
 
-const Variable& DaeBuilder::variable(const std::string& name) const {
+Function DaeBuilder::transition(const std::string& fname) const {
   try {
-    return (*this)->variable(name);
+    return (*this)->transition(fname);
   } catch (std::exception& e) {
-    THROW_ERROR("variable", e.what());
-  }
-}
-
-Variable& DaeBuilder::variable(size_t ind) {
-  try {
-    return (*this)->variable(ind);
-  } catch (std::exception& e) {
-    THROW_ERROR("variable", e.what());
-  }
-}
-
-const Variable& DaeBuilder::variable(size_t ind) const {
-  try {
-    return (*this)->variable(ind);
-  } catch (std::exception& e) {
-    THROW_ERROR("variable", e.what());
+    THROW_ERROR("transition", e.what());
+    return Function(); // never reached
   }
 }
 
@@ -879,61 +1248,21 @@ const DaeBuilderInternal* DaeBuilder::operator->() const {
   return static_cast<const DaeBuilderInternal*>(SharedObject::operator->());
 }
 
-const MX& DaeBuilder::var(size_t ind) const {
+MX DaeBuilder::der(const MX& v) const {
   try {
-    return (*this)->var(ind);
+    return (*this)->der(v);
   } catch (std::exception& e) {
-    THROW_ERROR("var", e.what());
-    static MX dummy;
-    return dummy; // never reached
+    THROW_ERROR("der", e.what());
+    return MX();  // never reached
   }
 }
 
-std::vector<MX> DaeBuilder::var(const std::vector<size_t>& ind) const {
+MX DaeBuilder::der(const MX& v) {
   try {
-    return (*this)->var(ind);
+    return (*this)->der(v);
   } catch (std::exception& e) {
-    THROW_ERROR("var", e.what());
-    return {}; // never reached
-  }
-}
-
-size_t DaeBuilder::find(const std::string& name) const {
-  try {
-    return (*this)->find(name);
-  } catch (std::exception& e) {
-    THROW_ERROR("find", e.what());
-    return -1; // never reached
-  }
-}
-
-std::vector<size_t> DaeBuilder::find(const std::vector<std::string>& name) const {
-  try {
-    return (*this)->find(name);
-  } catch (std::exception& e) {
-    THROW_ERROR("find", e.what());
-    return {}; // never reached
-  }
-}
-
-const std::string& DaeBuilder::name(size_t ind) const {
-  try {
-    return variable(ind).name;
-  } catch (std::exception& e) {
-    THROW_ERROR("name", e.what());
-    static std::string dummy;
-    return dummy; // never reached
-  }
-}
-
-std::vector<std::string> DaeBuilder::name(const std::vector<size_t>& ind) const {
-  try {
-    std::vector<std::string> r(ind.size());
-    for (size_t i = 0; i < r.size(); ++i) r[i] = name(ind[i]);
-    return r;
-  } catch (std::exception& e) {
-    THROW_ERROR("name", e.what());
-    return {}; // never reached
+    THROW_ERROR("der", e.what());
+    return MX();  // never reached
   }
 }
 
@@ -975,7 +1304,7 @@ void DaeBuilder::set_attribute(const std::string& a, const std::vector<std::stri
 
 double DaeBuilder::min(const std::string& name) const {
   try {
-    return variable(name).min;
+    return (*this)->variable(name).min;
   } catch (std::exception& e) {
     THROW_ERROR("min", e.what());
     return 0; // never reached
@@ -993,7 +1322,7 @@ std::vector<double> DaeBuilder::min(const std::vector<std::string>& name) const 
 
 void DaeBuilder::set_min(const std::string& name, double val) {
   try {
-    variable(name).min = val;
+    (*this)->variable(name).min = val;
   } catch (std::exception& e) {
     THROW_ERROR("set_min", e.what());
   }
@@ -1009,7 +1338,7 @@ void DaeBuilder::set_min(const std::vector<std::string>& name, const std::vector
 
 double DaeBuilder::max(const std::string& name) const {
   try {
-    return variable(name).max;
+    return (*this)->variable(name).max;
   } catch (std::exception& e) {
     THROW_ERROR("max", e.what());
     return 0; // never reached
@@ -1027,7 +1356,7 @@ std::vector<double> DaeBuilder::max(const std::vector<std::string>& name) const 
 
 void DaeBuilder::set_max(const std::string& name, double val) {
   try {
-    variable(name).max = val;
+    (*this)->variable(name).max = val;
   } catch (std::exception& e) {
     THROW_ERROR("set_max", e.what());
   }
@@ -1043,7 +1372,7 @@ void DaeBuilder::set_max(const std::vector<std::string>& name, const std::vector
 
 double DaeBuilder::nominal(const std::string& name) const {
   try {
-    return variable(name).nominal;
+    return (*this)->variable(name).nominal;
   } catch (std::exception& e) {
     THROW_ERROR("nominal", e.what());
     return 0; // never reached
@@ -1061,7 +1390,7 @@ std::vector<double> DaeBuilder::nominal(const std::vector<std::string>& name) co
 
 void DaeBuilder::set_nominal(const std::string& name, double val) {
   try {
-    variable(name).nominal = val;
+    (*this)->variable(name).nominal = val;
   } catch (std::exception& e) {
     THROW_ERROR("set_nominal", e.what());
   }
@@ -1075,13 +1404,12 @@ void DaeBuilder::set_nominal(const std::vector<std::string>& name, const std::ve
   }
 }
 
-double DaeBuilder::start(const std::string& name) const {
+std::vector<double> DaeBuilder::start(const std::string& name) const {
   try {
-    casadi_assert(numel(name) == 1, "Variable " + name + " is not scalar");
-    return variable(name).start.front();
+    return (*this)->attribute(Attribute::START, std::vector<std::string>{name});
   } catch (std::exception& e) {
     THROW_ERROR("start", e.what());
-    return 0; // never reached
+    return {}; // never reached
   }
 }
 
@@ -1097,6 +1425,14 @@ std::vector<double> DaeBuilder::start(const std::vector<std::string>& name) cons
 void DaeBuilder::set_start(const std::string& name, double val) {
   try {
     (*this)->set_attribute(Attribute::START, name, val);
+  } catch (std::exception& e) {
+    THROW_ERROR("set_start", e.what());
+  }
+}
+
+void DaeBuilder::set_start(const std::string& name, const std::vector<double>& val) {
+  try {
+    (*this)->set_attribute(Attribute::START, std::vector<std::string>{name}, val);
   } catch (std::exception& e) {
     THROW_ERROR("set_start", e.what());
   }
@@ -1175,7 +1511,7 @@ std::vector<GenericType> DaeBuilder::get(const std::vector<std::string>& name) c
 Sparsity DaeBuilder::jac_sparsity(const std::vector<std::string>& onames,
     const std::vector<std::string>& inames) const {
   try {
-    return (*this)->jac_sparsity(find(onames), find(inames));
+    return (*this)->jac_sparsity((*this)->find(onames), (*this)->find(inames));
   } catch (std::exception& e) {
     THROW_ERROR("jac_sparsity", e.what());
     return Sparsity();  // never reached

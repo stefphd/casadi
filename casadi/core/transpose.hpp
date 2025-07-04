@@ -63,6 +63,14 @@ namespace casadi {
         \identifier{13m} */
     void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const override;
 
+    /** \brief Evaluate the MX node on a const/linear/nonlinear partition
+
+        \identifier{28e} */
+    void eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const override {
+        eval_linear_rearrange(arg, res);
+    }
+
     /** \brief Calculate forward mode directional derivatives
 
         \identifier{13n} */
@@ -95,7 +103,9 @@ namespace casadi {
         \identifier{13s} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Get the operation
 
@@ -198,7 +208,9 @@ namespace casadi {
         \identifier{142} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Get required length of iw field
 

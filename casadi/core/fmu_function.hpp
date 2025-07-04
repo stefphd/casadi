@@ -64,11 +64,9 @@ struct CASADI_EXPORT FmuMemory : public FunctionMemory {
   // Input and output buffers
   std::vector<double> ibuf_, obuf_;
   // Seeds, sensitivities
-  std::vector<double> seed_, sens_;
-  // Which entries have been changed
-  std::vector<bool> changed_;
-  // Which entries are being requested
-  std::vector<bool> requested_;
+  std::vector<double> isens_, osens_;
+  // Which inputs and outputs have been marked
+  std::vector<bool> imarked_, omarked_;
   // Derivative with respect to
   std::vector<size_t> wrt_;
   // Current known/unknown variables
@@ -157,8 +155,17 @@ class CASADI_EXPORT FmuFunction : public FunctionInternal {
   // What blocks exist?
   bool has_jac_, has_fwd_, has_adj_, has_hess_;
 
+  // Override provides_directional_derivatives, provides_adjoint_derivatives
+  bool uses_directional_derivatives_, uses_adjoint_derivatives_;
+
+  /// Number of sensitivities
+  casadi_int nfwd_, nadj_;
+
+  // Validate derivative calculations: Move to base class?
+  bool validate_forward_, validate_hessian_;
+
   // User-set options
-  bool enable_ad_, validate_ad_, make_symmetric_, check_hessian_;
+  bool make_symmetric_;
   double step_, abstol_, reltol_;
   bool print_progress_, new_jacobian_, new_forward_, new_hessian_, hessian_coloring_;
   std::string validate_ad_file_;
@@ -319,6 +326,13 @@ class CASADI_EXPORT FmuFunction : public FunctionInternal {
     const std::vector<std::string>& onames,
     const Dict& opts) const override;
   ///@}
+
+  /** \brief Check for validatity of memory object count
+  *
+  * Purpose if to allow more helpful error messages
+
+      \identifier{2a9} */
+  void check_mem_count(casadi_int n) const override;
 
   /** \brief Create memory block
 

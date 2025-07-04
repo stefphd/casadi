@@ -40,11 +40,18 @@
 #include "external.hpp"
 #include "fmu_function.hpp"
 #include "integrator.hpp"
+#include "filesystem_impl.hpp"
 
 // Throw informative error message
 #define THROW_ERROR_NODE(FNAME, NODE, WHAT) \
 throw CasadiException("Error in DaeBuilderInternal::" FNAME " for '" + this->name_ \
   + "', node '" + NODE.name + "' (line " + str(NODE.line) + ") at " \
+  + CASADI_WHERE + ":\n" + std::string(WHAT));
+
+// Throw informative error message
+#define THROW_ERROR(FNAME, WHAT) \
+throw CasadiException("Error in DaeBuilderInternal::" FNAME " for '" + this->name_ \
+  + "' at " \
   + CASADI_WHERE + ":\n" + std::string(WHAT));
 
 namespace casadi {
@@ -179,28 +186,172 @@ CASADI_EXPORT std::string to_string(DependenciesKind v) {
   return "";
 }
 
-double Variable::attribute(Attribute a) const {
+std::string to_string(Category v) {
+  switch (v) {
+  case Category::T: return "t";
+  case Category::P: return "p";
+  case Category::U: return "u";
+  case Category::X: return "x";
+  case Category::Z: return "z";
+  case Category::Q: return "q";
+  case Category::C: return "c";
+  case Category::D: return "d";
+  case Category::W: return "w";
+  case Category::CALCULATED: return "calculated";
+  default: break;
+  }
+  return "";
+}
+
+std::string description(Category v) {
+  switch (v) {
+  case Category::T: return "independent variable";
+  case Category::P: return "parameter";
+  case Category::U: return "control";
+  case Category::X: return "differential state";
+  case Category::Z: return "algebraic variable";
+  case Category::Q: return "quadrature state";
+  case Category::C: return "constant";
+  case Category::D: return "dependent parameter";
+  case Category::W: return "dependent variable";
+  case Category::CALCULATED: return "calculated variable";
+  default: break;
+  }
+  return "";
+}
+
+bool is_input_category(Category cat) {
+  switch (cat) {
+    case Category::T:  // Fall-through
+    case Category::P:  // Fall-through
+    case Category::U:  // Fall-through
+    case Category::X:  // Fall-through
+    case Category::Z:  // Fall-through
+    case Category::Q:  // Fall-through
+    case Category::C:  // Fall-through
+    case Category::D:  // Fall-through
+    case Category::W:
+      // Input category
+      return true;
+    case Category::CALCULATED:
+      // Output category
+      return false;
+    default: break;
+  }
+  casadi_error("Cannot handle: " + to_string(cat));
+}
+
+bool is_acyclic(Category cat) {
+  switch (cat) {
+    case Category::C:  // Fall-through
+    case Category::D:  // Fall-through
+    case Category::W:
+      // Acyclic category
+      return true;
+    default:
+      return false;
+  }
+}
+
+OutputCategory dependent_definition(Category cat) {
+  switch (cat) {
+    case Category::D:
+      return OutputCategory::DDEF;
+    case Category::W:
+      return OutputCategory::WDEF;
+    default:
+      break;
+  }
+  casadi_error("No dependent definition category for: " + to_string(cat));
+}
+
+std::vector<Category> input_categories() {
+  std::vector<Category> ret;
+  for (casadi_int i = 0; i != enum_traits<Category>::n_enum; ++i) {
+    auto cat = static_cast<Category>(i);
+    if (is_input_category(cat)) ret.push_back(cat);
+  }
+  return ret;
+}
+
+std::vector<OutputCategory> output_categories() {
+  std::vector<OutputCategory> ret;
+  for (casadi_int i = 0; i != enum_traits<OutputCategory>::n_enum; ++i) {
+    ret.push_back(static_cast<OutputCategory>(i));
+  }
+  return ret;
+}
+
+casadi_int Variable::size(Attribute a) const {
+  switch (a) {
+    case Attribute::START:  // Fall-through
+    case Attribute::VALUE:
+      // Vector-valued attribute
+      return numel;
+    default:
+      break;
+  }
+  return 1;
+}
+
+void Variable::get_attribute(Attribute a, double* val) const {
+  // Only if scalar
+  casadi_assert(numel == 1, "Variable " + name + " is not scalar");
+  // Handle attributes
   switch (a) {
     case Attribute::MIN:
-      return min;
+      if (val) *val = min;
+      return;
     case Attribute::MAX:
-      return max;
+      if (val) *val = max;
+      return;
     case Attribute::NOMINAL:
-      return nominal;
+      if (val) *val = nominal;
+      return;
     case Attribute::START:
-      casadi_assert(numel == 1, "Not a scalar variable");
-      return start.front();
+      if (val) *val = start.front();
+      return;
     case Attribute::VALUE:
-      casadi_assert(numel == 1, "Not a scalar variable");
-      return value.front();
+      if (val) *val = value.front();
+      return;
     default:
       break;
   }
   casadi_error("Cannot handle: " + to_string(a));
-  return 0;
+}
+
+void Variable::get_attribute(Attribute a, std::vector<double>* val) const {
+  // Resize return
+  if (val) val->resize(size(a));
+  // Quick return if scalar
+  if (size(a) == 1) return get_attribute(a, val ? &val->front() : nullptr);
+  // Handle vector attributes
+  switch (a) {
+    case Attribute::START:
+      if (val) std::copy(start.begin(), start.end(), val->begin());
+      return;
+    case Attribute::VALUE:
+      if (val) std::copy(start.begin(), start.end(), val->begin());
+      return;
+    default:
+      break;
+  }
+  casadi_error("Cannot handle: " + to_string(a));
+}
+
+void Variable::get_attribute(Attribute a, std::string* val) const {
+  switch (a) {
+    case Attribute::STRINGVALUE:
+      if (val) *val = stringvalue;
+      return;
+    default:
+      break;
+  }
+  casadi_error("Cannot handle: " + to_string(a));
 }
 
 void Variable::set_attribute(Attribute a, double val) {
+  // Handle attributes
   switch (a) {
     case Attribute::MIN:
       min = val;
@@ -223,18 +374,28 @@ void Variable::set_attribute(Attribute a, double val) {
   casadi_error("Cannot handle: " + to_string(a));
 }
 
-std::string Variable::string_attribute(Attribute a) const {
+void Variable::set_attribute(Attribute a, const std::vector<double>& val) {
+  // Quick return if scalar
+  if (val.size() == 1) return set_attribute(a, val.front());
+  // If not scalar, size must be number of elements
+  casadi_assert(val.size() == numel, "Wrong size for attribute " + to_string(a));
+  // Handle vector attributes
   switch (a) {
-    case Attribute::STRINGVALUE:
-      return stringvalue;
+    case Attribute::START:
+      std::copy(val.begin(), val.end(), start.begin());
+      return;
+    case Attribute::VALUE:
+      std::copy(val.begin(), val.end(), value.begin());
+      return;
     default:
       break;
   }
   casadi_error("Cannot handle: " + to_string(a));
-  return std::string();
 }
 
-void Variable::set_string_attribute(Attribute a, const std::string& val) {
+
+
+void Variable::set_attribute(Attribute a, const std::string& val) {
   switch (a) {
     case Attribute::STRINGVALUE:
       stringvalue = val;
@@ -244,50 +405,35 @@ void Variable::set_string_attribute(Attribute a, const std::string& val) {
   }
 }
 
-Initial Variable::default_initial(Causality causality, Variability variability) {
-  // According to table in FMI 2.0.2 specification, section 2.2.7
-  switch (variability) {
-  case Variability::CONSTANT:
-    if (causality == Causality::OUTPUT || causality == Causality::LOCAL)
-      return Initial::EXACT;
-    break;
-  case Variability::FIXED:
-    // Fall-through
-  case Variability::TUNABLE:
-    if (causality == Causality::PARAMETER)
-      return Initial::EXACT;
-    else if (causality == Causality::CALCULATED_PARAMETER || causality == Causality::LOCAL)
-      return Initial::CALCULATED;
-    break;
-  case Variability::DISCRETE:
-  // Fall-through
-  case Variability::CONTINUOUS:
-    if (causality == Causality::OUTPUT || causality == Causality::LOCAL)
-      return Initial::CALCULATED;
-    break;
-  default: break;
-  }
-  // Initial value not available
-  return Initial::NA;
-}
-
-Variable::Variable(casadi_int index, casadi_int numel, const std::string& name, const MX& v)
-    : index(index), numel(numel), name(name), v(v) {
+Variable::Variable(casadi_int index, const std::string& name,
+    const std::vector<casadi_int>& dimension, const MX& expr)
+    : index(index), name(name), dimension(dimension), v(expr) {
+  // Consistency checks
+  casadi_assert(dimension.size() > 0, "Variable must have at least one dimension");
+  for (casadi_int d : dimension) casadi_assert(d > 0, "Dimensions must be positive");
+  // Number of elements
+  numel = 1;
+  for (casadi_int d : dimension) numel *= d;
+  // Symbolic expression (always flattened)
+  if (this->v.is_empty()) this->v = MX::sym(name, numel);
   // Default arguments
-  dimension = {numel};
-  value_reference = index;
-  type = Type::FLOAT64;
-  causality = Causality::LOCAL;
-  variability = Variability::CONTINUOUS;
-  min = -inf;
-  max = inf,
-  nominal = 1.0;
-  start.resize(numel, 0.0);
-  der_of = -1;
-  der = -1;
-  alg = -1;
-  value.resize(numel, nan);
-  dependency = false;
+  this->value_reference = index;
+  this->type = Type::FLOAT64;
+  this->causality = Causality::LOCAL;
+  this->variability = Variability::CONTINUOUS;
+  this->category = Category::NUMEL;
+  this->initial = Initial::NUMEL;
+  this->min = -inf;
+  this->max = inf,
+  this->nominal = 1.0;
+  this->start.resize(numel, 0.0);
+  this->der_of = -1;
+  this->parent = -1;
+  this->der = -1;
+  this->bind = -1;
+  this->in_rhs = false;
+  this->value.resize(numel, nan);
+  this->dependency = false;
 }
 
 XmlNode Variable::export_xml(const DaeBuilderInternal& self) const {
@@ -306,6 +452,10 @@ XmlNode Variable::export_xml(const DaeBuilderInternal& self) const {
   // Variability (real variables are continuous by default)
   if (!(is_real() && variability == Variability::CONTINUOUS))
     r.set_attribute("variability", to_string(variability));
+  // Initial property
+  if (initial != Initial::NA && initial != Initial::NUMEL) {
+    r.set_attribute("initial", to_string(initial));
+  }
   // Minimum attribute
   if (min != -inf) {
     if (is_real()) {
@@ -366,6 +516,46 @@ bool Variable::has_start() const {
   return false;
 }
 
+bool Variable::needs_der() const {
+  // Only continuous variables can have derivatives
+  if (variability != Variability::CONTINUOUS) return false;
+  // Independent variables have trivial derivatives (1)
+  if (causality == Causality::INDEPENDENT) return false;
+  // Inputs are assumed piecewise constant
+  if (causality == Causality::INPUT) return false;
+  // Other variables may have derivatives
+  return true;
+}
+
+MX Variable::get_der(const DaeBuilderInternal& self) const {
+  if (causality == Causality::INDEPENDENT) {
+    // Time derivative of independent variable is 1
+    return 1;
+  } else if (needs_der()) {
+    casadi_assert(der >= 0, "Variable " + name + " has no time derivative");
+    // Should have a derviative expression
+    return self.variable(der).v;
+  } else {
+    // Constant or piecewise constant variable
+    return MX::zeros(v.sparsity());
+  }
+}
+
+MX Variable::get_der(DaeBuilderInternal& self, bool may_allocate) {
+  // Create a new derivative variable, if needed
+  if (may_allocate && needs_der() && der < 0) {
+    Variable& der_v = self.new_variable("der(" + name + ")", dimension);
+    self.categorize(der_v.index, Category::Z);
+    der_v.der_of = index;
+    der_v.parent = index;
+    der = der_v.index;
+    // Add to list of derivatives
+    self.derivatives_.push_back(der_v.index);
+  }
+  // Call the const overload
+  return get_der(const_cast<const DaeBuilderInternal&>(self));
+}
+
 DaeBuilderInternal::~DaeBuilderInternal() {
   for (Variable* v : variables_) {
     if (v) delete v;
@@ -373,27 +563,57 @@ DaeBuilderInternal::~DaeBuilderInternal() {
 }
 
 DaeBuilderInternal::DaeBuilderInternal(const std::string& name, const std::string& path,
-    const Dict& opts) : name_(name), path_(path) {
+    const Dict& opts) : name_(name), resource_(path) {
   clear_cache_ = false;
   number_of_event_indicators_ = 0;
-  provides_directional_derivative_ = 0;
+  provides_directional_derivatives_ = false;
+  provides_adjoint_derivatives_ = false;
+  can_be_instantiated_only_once_per_process_ = false;
   symbolic_ = true;
+  detect_quad_ = false;
+  start_time_ = nan;
+  stop_time_ = nan;
+  tolerance_ = nan;
+  step_size_ = nan;
   // Default options
   debug_ = false;
   fmutol_ = 0;
+  ignore_time_ = false;
+  std::string resource_serialize = "link";
   // Read options
   for (auto&& op : opts) {
     if (op.first=="debug") {
       debug_ = op.second;
     } else if (op.first=="fmutol") {
       fmutol_ = op.second;
+    } else if (op.first=="ignore_time") {
+      ignore_time_ = op.second;
+    } else if (op.first=="detect_quad") {
+      detect_quad_ = op.second;
+    } else if (op.first=="resource_serialize_mode") {
+      resource_.change_option("serialize_mode", op.second);
     } else {
       casadi_error("No such option: " + op.first);
     }
   }
+  indices_.resize(enum_traits<Category>::n_enum);
 }
 
 void DaeBuilderInternal::load_fmi_description(const std::string& filename) {
+  // Check if file exists
+  std::ifstream test(filename);
+  if (!test.good()) {
+    if (Filesystem::is_enabled()) {
+      casadi_error("Could not open file '" + filename + "'.");
+    } else {
+      casadi_error("Could not open file '" + filename + "'. "
+        "Note that, since CasADi was compiled without WITH_GHC_FILESYSTEM=ON, "
+        "passing fmu files to DaeBuilder is unsupported. "
+        "You could manually unzip the FMU file and "
+        "pass the path to the unzipped directory instead.");
+    }
+  }
+
   // Ensure no variables already
   casadi_assert(n_variables() == 0, "Instance already has variables");
 
@@ -401,10 +621,25 @@ void DaeBuilderInternal::load_fmi_description(const std::string& filename) {
   XmlFile xml_file("tinyxml");
   XmlNode fmi_desc = xml_file.parse(filename)[0];  // One child; fmiModelDescription
 
-  // Read attributes
+  // Read FMU version
   fmi_version_ = fmi_desc.attribute<std::string>("fmiVersion", "");
+  if (fmi_version_.rfind("1.", 0) == 0) {
+    // FMI 1.0: Only for symbolic FMUs
+    fmi_major_ = 1;
+  } else if (fmi_version_.rfind("2.", 0) == 0) {
+    // FMI 2.0
+    fmi_major_ = 2;
+  } else if (fmi_version_.rfind("3.", 0) == 0) {
+    // FMI 3
+    fmi_major_ = 3;
+  } else {
+    casadi_error("Unknown FMI version: " + fmi_version_);
+  }
+
+  // Read attributes
   model_name_ = fmi_desc.attribute<std::string>("modelName", "");
-  guid_ = fmi_desc.attribute<std::string>("guid", "");
+  instantiation_token_ = fmi_desc.attribute<std::string>(
+    fmi_major_ >= 3 ? "instantiationToken" : "guid");
   description_ = fmi_desc.attribute<std::string>("description", "");
   author_ = fmi_desc.attribute<std::string>("author", "");
   copyright_ = fmi_desc.attribute<std::string>("copyright", "");
@@ -412,87 +647,57 @@ void DaeBuilderInternal::load_fmi_description(const std::string& filename) {
   generation_tool_ = fmi_desc.attribute<std::string>("generationTool", "");
   generation_date_and_time_ = fmi_desc.attribute<std::string>("generationDateAndTime", "");
   variable_naming_convention_ = fmi_desc.attribute<std::string>("variableNamingConvention", "");
-  number_of_event_indicators_ = fmi_desc.attribute<casadi_int>("numberOfEventIndicators", 0);
+  if (fmi_major_ >= 3) {
+    number_of_event_indicators_ = 0;  // In FMI 3: Obtain from binary
+  } else {
+    number_of_event_indicators_ = fmi_desc.attribute<casadi_int>("numberOfEventIndicators", 0);
+  }
+
+  // Process DefaultExperiment
+  if (fmi_desc.has_child("DefaultExperiment")) {
+    import_default_experiment(fmi_desc["DefaultExperiment"]);
+  }
 
   // Process ModelExchange
-  if (fmi_desc.has_child("ModelExchange"))
+  bool has_model_exchange = false;
+  if (fmi_desc.has_child("ModelExchange")) {
+    has_model_exchange = true;
     import_model_exchange(fmi_desc["ModelExchange"]);
+  }
 
   // Process ModelVariables
   casadi_assert(fmi_desc.has_child("ModelVariables"), "Missing 'ModelVariables'");
   import_model_variables(fmi_desc["ModelVariables"]);
 
   // Process model structure
-  if (fmi_desc.has_child("ModelStructure"))
+  if (fmi_desc.has_child("ModelStructure")) {
     import_model_structure(fmi_desc["ModelStructure"]);
-
-  // **** Add binding equations ****
-  if (fmi_desc.has_child("equ:BindingEquations")) {
-    // Get a reference to the BindingEquations node
-    const XmlNode& bindeqs = fmi_desc["equ:BindingEquations"];
-    // Loop over binding equations
-    for (casadi_int i = 0; i < bindeqs.size(); ++i) {
-      // Reference to the binding equation
-      const XmlNode& beq_node = bindeqs[i];
-      // Get the variable and binding expression
-      Variable& var = read_variable(beq_node[0]);
-      if (beq_node[1].size() == 1) {
-        // Regular expression
-        var.beq = read_expr(beq_node[1][0]);
-      } else {
-        // OpenModelica 1.17 occationally generates integer values without type specifier (bug?)
-        casadi_assert(beq_node[1].size() == 0, "Not implemented");
-        casadi_int val;
-        beq_node[1].get(&val);
-        casadi_warning(var.name + " has binding equation without type specifier: " + str(val));
-        var.beq = val;
-      }
-    }
   }
 
-  // **** Add dynamic equations, initial equations ****
+  // Is a symbolic representation available?
   symbolic_ = false;  // use DLL by default
-  for (bool init_eq : {true, false}) {
-    const char* equ = init_eq ? "equ:InitialEquations" : "equ:DynamicEquations";
-    if (fmi_desc.has_child(equ)) {
-      // Symbolic model equations available
-      symbolic_ = true;
-      // Get a reference to the DynamicEquations node
-      const XmlNode& dyneqs = fmi_desc[equ];
-      // Add equations
-      for (casadi_int i = 0; i < dyneqs.size(); ++i) {
-        // Get a reference to the variable
-        const XmlNode& n = dyneqs[i];
-        try {
-          // Consistency checks
-          casadi_assert_dev(n.name == "equ:Equation");
-          casadi_assert_dev(n.size() == 1 && n[0].name == "exp:Sub");
-          // Ensure not empty
-          if (n[0].size() == 0) {
-            casadi_warning(str(equ) + "#" + str(i) + " is empty, ignored.");
-            continue;
-          }
-          // Get the left-hand-sides and right-hand-sides
-          const XmlNode& lhs = n[0][0];
-          const XmlNode& rhs = n[0][1];
-          // Left-hand-side needs to be a variable
-          Variable& v = read_variable(lhs);
-          // Right-hand-side is the binding equation
-          MX beq = read_expr(rhs);
-          // Set the equation
-          w_.push_back(find(v.name));
-          v.beq = beq;
-          // Also add to list of initial equations
-          if (init_eq) {
-            init_lhs_.push_back(v.v);
-            init_rhs_.push_back(beq);
-          }
-        } catch (std::exception& e) {
-          uerr() << "Failed to read " << equ << "#" << i << ": " << e.what() << std::endl;
-        }
-      }
-    }
+
+  // Add symbolic binding equations
+  if (fmi_desc.has_child("equ:BindingEquations")) {
+    symbolic_ = true;
+    import_binding_equations(fmi_desc["equ:BindingEquations"]);
   }
+
+  // Add symbolic initial equations
+  if (fmi_desc.has_child("equ:InitialEquations")) {
+    symbolic_ = true;
+    import_initial_equations(fmi_desc["equ:InitialEquations"]);
+  }
+
+  // Add symbolic dynamic equations
+  if (fmi_desc.has_child("equ:DynamicEquations")) {
+    symbolic_ = true;
+    import_dynamic_equations(fmi_desc["equ:DynamicEquations"]);
+  }
+
+  // Ensure model equations are available, binary or symbolic
+  casadi_assert(symbolic_ || has_model_exchange,
+    "FMU must be of ModelExchange type or be symbolic (FMUX)");
 }
 
 std::string DaeBuilderInternal::generate_build_description(
@@ -592,16 +797,16 @@ XmlNode DaeBuilderInternal::generate_model_structure() const {
   XmlNode r;
   r.name = "ModelStructure";
   // Add outputs
-  for (size_t i : y_) {
+  for (size_t i : outputs_) {
     const Variable& y = variable(i);
     XmlNode c;
     c.name = "Output";
     c.set_attribute("valueReference", static_cast<casadi_int>(y.value_reference));
     c.set_attribute("dependencies", y.dependencies);
- r.children.push_back(c);
+    r.children.push_back(c);
   }
   // Add state derivatives
-  for (size_t i : x_) {
+  for (size_t i : indices(Category::X)) {
     const Variable& xdot = variable(variable(i).der);
     XmlNode c;
     c.name = "ContinuousStateDerivative";
@@ -610,7 +815,7 @@ XmlNode DaeBuilderInternal::generate_model_structure() const {
     r.children.push_back(c);
   }
   // Add initial unknowns: Outputs
-  for (size_t i : y_) {
+  for (size_t i : outputs_) {
     const Variable& y = variable(i);
     XmlNode c;
     c.name = "InitialUnknown";
@@ -619,12 +824,21 @@ XmlNode DaeBuilderInternal::generate_model_structure() const {
     r.children.push_back(c);
   }
   // Add initial unknowns: State derivative
-  for (size_t i : x_) {
+  for (size_t i : indices(Category::X)) {
     const Variable& xdot = variable(variable(i).der);
     XmlNode c;
     c.name = "InitialUnknown";
     c.set_attribute("valueReference", static_cast<casadi_int>(xdot.value_reference));
     c.set_attribute("dependencies", xdot.dependencies);
+    r.children.push_back(c);
+  }
+  // Add event indicators
+  for (size_t i : event_indicators_) {
+    const Variable& zero = variable(i);
+    XmlNode c;
+    c.name = "EventIndicator";
+    c.set_attribute("valueReference", static_cast<casadi_int>(zero.value_reference));
+    c.set_attribute("dependencies", zero.dependencies);
     r.children.push_back(c);
   }
   return r;
@@ -636,39 +850,42 @@ void DaeBuilderInternal::update_dependencies() const {
   // Dependendencies of the ODE right-hand-side
   Sparsity dode_dxT = oracle.jac_sparsity(oracle.index_out("ode"), oracle.index_in("x")).T();
   Sparsity dode_duT = oracle.jac_sparsity(oracle.index_out("ode"), oracle.index_in("u")).T();
-  for (casadi_int i = 0; i < x_.size(); ++i) {
+  for (casadi_int i = 0; i < size(Category::X); ++i) {
     // Get output variable
-    const Variable& xdot = variable(variable(x_.at(i)).der);
+    const Variable& xdot = variable(variable(Category::X, i).der);
     // Clear dependencies
     xdot.dependencies.clear();
     // Dependencies on states
     for (casadi_int k = dode_dxT.colind(i); k < dode_dxT.colind(i + 1); ++k) {
       casadi_int j = dode_dxT.row(k);
-      xdot.dependencies.push_back(variable(x_.at(j)).value_reference);
+      xdot.dependencies.push_back(variable(Category::X, j).value_reference);
     }
     // Dependencies on controls
     for (casadi_int k = dode_duT.colind(i); k < dode_duT.colind(i + 1); ++k) {
       casadi_int j = dode_duT.row(k);
-      xdot.dependencies.push_back(variable(u_.at(j)).value_reference);
+      xdot.dependencies.push_back(variable(Category::U, j).value_reference);
     }
   }
-  // Dependendencies of the output function
-  Sparsity dydef_dxT = oracle.jac_sparsity(oracle.index_out("ydef"), oracle.index_in("x")).T();
-  Sparsity dydef_duT = oracle.jac_sparsity(oracle.index_out("ydef"), oracle.index_in("u")).T();
-  for (casadi_int i = 0; i < y_.size(); ++i) {
-    // Get output variable
-    const Variable& y = variable(y_.at(i));
-    // Clear dependencies
-    y.dependencies.clear();
-    // Dependencies on states
-    for (casadi_int k = dydef_dxT.colind(i); k < dydef_dxT.colind(i + 1); ++k) {
-      casadi_int j = dydef_dxT.row(k);
-      y.dependencies.push_back(variable(x_.at(j)).value_reference);
-    }
-    // Dependencies on controls
-    for (casadi_int k = dydef_duT.colind(i); k < dydef_duT.colind(i + 1); ++k) {
-      casadi_int j = dydef_duT.row(k);
-      y.dependencies.push_back(variable(u_.at(j)).value_reference);
+  // Dependendencies of the outputs and event indicators
+  for (std::string catname : {"y", "zero"}) {
+    const std::vector<size_t>& oind = catname == "y" ? outputs_ : event_indicators_;
+    Sparsity dy_dxT = oracle.jac_sparsity(oracle.index_out(catname), oracle.index_in("x")).T();
+    Sparsity dy_duT = oracle.jac_sparsity(oracle.index_out(catname), oracle.index_in("u")).T();
+    for (casadi_int i = 0; i < oind.size(); ++i) {
+      // Get output variable
+      const Variable& y = variable(oind.at(i));
+      // Clear dependencies
+      y.dependencies.clear();
+      // Dependencies on states
+      for (casadi_int k = dy_dxT.colind(i); k < dy_dxT.colind(i + 1); ++k) {
+        casadi_int j = dy_dxT.row(k);
+        y.dependencies.push_back(variable(Category::X, j).value_reference);
+      }
+      // Dependencies on controls
+      for (casadi_int k = dy_duT.colind(i); k < dy_duT.colind(i + 1); ++k) {
+        casadi_int j = dy_duT.row(k);
+        y.dependencies.push_back(variable(Category::U, j).value_reference);
+      }
     }
   }
 }
@@ -689,8 +906,12 @@ std::vector<std::string> DaeBuilderInternal::export_fmu(const Dict& opts) const 
   std::string guid = generate_guid();
   // Generate model function
   std::string dae_filename = name_;
+  casadi_assert(size(Category::Q) == 0, "Not implemented");
   Function dae = shared_from_this<DaeBuilder>().create(dae_filename,
-    {"t", "x", "p", "u"}, {"ode", "ydef"});
+    {"t", "x", "p", "u"}, {"ode", "y", "zero"});
+  // Event transition function, if needed
+  Function tfun;
+  if (!event_indicators_.empty()) tfun = transition("transition_" + name_);
   // Generate C code for model equations
   Dict codegen_opts;
   codegen_opts["with_header"] = true;
@@ -698,6 +919,7 @@ std::vector<std::string> DaeBuilderInternal::export_fmu(const Dict& opts) const 
   gen.add(dae);
   gen.add(dae.forward(1));
   gen.add(dae.reverse(1));
+  if (!tfun.is_null()) gen.add(tfun);
   ret.push_back(gen.generate());
   ret.push_back(dae_filename + ".h");
   // Make sure dependencies are up-to-date
@@ -790,30 +1012,35 @@ std::string DaeBuilderInternal::generate_wrapper(const std::string& guid,
   f << "casadi_real start[SZ_MEM] = " << generate(start_all()) << ";\n\n";
 
   // States
-  f << "#define N_X " << x_.size() << "\n"
-    << "fmi3ValueReference x_vr[N_X] = " << generate(x_) << ";\n"
+  f << "#define N_X " << size(Category::X) << "\n"
+    << "fmi3ValueReference x_vr[N_X] = " << generate(indices(Category::X)) << ";\n"
     << "\n";
 
   // Controls
-  f << "#define N_U " << u_.size() << "\n"
-    << "fmi3ValueReference u_vr[N_U] = " << generate(u_) << ";\n"
+  f << "#define N_U " << size(Category::U) << "\n"
+    << "fmi3ValueReference u_vr[N_U] = " << generate(indices(Category::U)) << ";\n"
     << "\n";
 
   // Parameters
-  f << "#define N_P " << p_.size() << "\n"
-    << "fmi3ValueReference p_vr[N_P] = " << generate(p_) << ";\n"
+  f << "#define N_P " << size(Category::P) << "\n"
+    << "fmi3ValueReference p_vr[N_P] = " << generate(indices(Category::P)) << ";\n"
     << "\n";
 
   // State derivatives
   std::vector<size_t> xdot;
-  for (size_t v : x_) xdot.push_back(variable(v).der);
+  for (size_t v : indices(Category::X)) xdot.push_back(variable(v).der);
   f << "fmi3ValueReference xdot_vr[N_X] = " << generate(xdot) << ";\n"
     << "\n";
 
   // Outputs
-  f << "#define N_Y " << y_.size() << "\n"
-    << "fmi3ValueReference y_vr[N_Y] = " << generate(y_) << ";\n"
+  f << "#define N_Y " << outputs_.size() << "\n"
+    << "fmi3ValueReference y_vr[N_Y] = " << generate(outputs_) << ";\n"
     << "\n";
+
+  // Event indicators
+  f << "#define N_ZERO " << event_indicators_.size() << "\n"
+  << "fmi3ValueReference zero_vr[N_ZERO] = " << generate(event_indicators_) << ";\n"
+  << "\n";
 
   // Memory structure
   f << CodeGenerator::fmu_helpers(name_);
@@ -823,10 +1050,10 @@ std::string DaeBuilderInternal::generate_wrapper(const std::string& guid,
   return wrapper_filename;
 }
 
-Variable& DaeBuilderInternal::read_variable(const XmlNode& node) {
+Variable& DaeBuilderInternal::read_variable(const XmlNode& node, Attribute* att) {
   try {
     // Qualified name
-    std::string qn = qualified_name(node);
+    std::string qn = qualified_name(node, att);
 
     return variable(qn);
   } catch (std::exception& e) {
@@ -835,10 +1062,35 @@ Variable& DaeBuilderInternal::read_variable(const XmlNode& node) {
   }
 }
 
+MX DaeBuilderInternal::read_identifier(const XmlNode& node) {
+  Attribute att;  // attribute
+  Variable& v = read_variable(node, &att);
+  if (att == Attribute::VALUE) {
+    return v.v;
+  } else if (att == Attribute::START) {
+    return v.start;
+  } else {
+    casadi_error("Cannot read attribute " + to_string(att));
+    return MX();
+  }
+}
+
 MX DaeBuilderInternal::read_expr(const XmlNode& node) {
   try {
-
     const std::string& fullname = node.name;
+
+    if (fullname == "fun:If") {
+      // Expression for condition, if and else
+      const XmlNode& cond = node["fun:Condition"];
+      const XmlNode& then_stmt = node["fun:Statements"];
+      const XmlNode& else_stmt = node["fun:Else"];
+      // Only scalar expression implemented
+      casadi_assert(cond.size() == 1, "Only one condition in if expression supported");
+      casadi_assert(then_stmt.size() == 1, "Only one then statement in if expression supported");
+      casadi_assert(else_stmt.size() == 1, "Only one else statement in if expression supported");
+      return if_else(read_expr(cond[0]), read_expr(then_stmt[0]), read_expr(else_stmt[0]));
+    }
+
     if (fullname.find("exp:")== std::string::npos) {
       casadi_error("DaeBuilderInternal::read_expr: unknown - expression is supposed to "
                   "start with 'exp:' , got " + fullname);
@@ -867,7 +1119,7 @@ MX DaeBuilderInternal::read_expr(const XmlNode& node) {
     } else if (name=="Exp") {
       return exp(read_expr(node[0]));
     } else if (name=="Identifier") {
-      return read_variable(node).v;
+      return read_identifier(node);
     } else if (name=="IntegerLiteral" || name=="BooleanLiteral") {
       casadi_int val;
       node.get(&val);
@@ -878,6 +1130,8 @@ MX DaeBuilderInternal::read_expr(const XmlNode& node) {
       return val;
     } else if (name=="Log") {
       return log(read_expr(node[0]));
+    } else if (name=="Not") { // Logical not
+      return !read_expr(node[0]);
     } else if (name=="LogLeq") { // Logical less than equal
       return read_expr(node[0]) <= read_expr(node[1]);
     } else if (name=="LogGeq") { // Logical greater than equal
@@ -910,6 +1164,9 @@ MX DaeBuilderInternal::read_expr(const XmlNode& node) {
       return ex;
     } else if (name=="Pow") {
       return pow(read_expr(node[0]), read_expr(node[1]));
+    } else if (name=="Pre") {
+      casadi_warning("Ignoring pre attribute");
+      return read_expr(node[0]);
     } else if (name=="RealLiteral") {
       double val;
       node.get(&val);
@@ -925,7 +1182,7 @@ MX DaeBuilderInternal::read_expr(const XmlNode& node) {
     } else if (name=="Tan") {
       return tan(read_expr(node[0]));
     } else if (name=="Time") {
-      return var(t_.at(0));
+      return var(indices(Category::T).at(0));
     } else if (name=="TimedVariable") {
       return read_variable(node[0]).v;
     } else if (name=="FunctionCall") {
@@ -937,20 +1194,19 @@ MX DaeBuilderInternal::read_expr(const XmlNode& node) {
       std::vector<MX> farg(args.size());
       for (casadi_int i = 0; i < args.size(); ++i) {
         // Lift input arguments
-        Variable& v = new_variable("w_" + str(w_.size()));
-        v.v = MX::sym(v.name);
+        Variable& v = new_variable("w_" + str(size(Category::W)));
         // Add to list of variables
-        w_.push_back(v.index);
+        indices(Category::W).push_back(v.index);
         // Set binding expression
-        v.beq = read_expr(args[i]);
+        Variable& v_beq = assign(v.name, read_expr(args[i]));
+        v.bind = v_beq.index;
         // Add to list of function arguments
         farg[i] = v.v;
       }
       // Return argument (scalar for now)
-      Variable& r = new_variable("w_" + str(w_.size()));
-      r.v = MX::sym(r.name);
+      Variable& r = new_variable("w_" + str(size(Category::W)));
       // Add to list of variables
-      w_.push_back(r.index);
+      indices(Category::W).push_back(r.index);
       // Return output variable
       return r.v;
     } else if (name=="Array") {
@@ -973,15 +1229,15 @@ void DaeBuilderInternal::disp(std::ostream& stream, bool more) const {
   if (more) sanity_check();
 
   // Print dimensions
-  stream << "nx = " << x_.size() << ", "
-         << "nz = " << z_.size() << ", "
-         << "nq = " << q_.size() << ", "
-         << "ny = " << y_.size() << ", "
-         << "np = " << p_.size() << ", "
-         << "nc = " << c_.size() << ", "
-         << "nd = " << d_.size() << ", "
-         << "nw = " << w_.size() << ", "
-         << "nu = " << u_.size();
+  stream << "nx = " << size(Category::X) << ", "
+         << "nz = " << size(Category::Z) << ", "
+         << "nq = " << size(Category::Q) << ", "
+         << "ny = " << outputs_.size() << ", "
+         << "np = " << size(Category::P) << ", "
+         << "nc = " << size(Category::C) << ", "
+         << "nd = " << size(Category::D) << ", "
+         << "nw = " << size(Category::W) << ", "
+         << "nu = " << size(Category::U);
 
   // Quick return?
   if (!more) return;
@@ -989,132 +1245,101 @@ void DaeBuilderInternal::disp(std::ostream& stream, bool more) const {
 
   // Print the functions
   if (!fun_.empty()) {
-    stream << "Functions" << std::endl;
+    stream << "Functions:" << std::endl;
     for (const Function& f : fun_) {
       stream << "  " << f << std::endl;
     }
   }
 
-  // Print the variables
-  stream << "Variables" << std::endl;
-  if (!t_.empty()) stream << "  t = " << var(t_.at(0)) << std::endl;
-  if (!c_.empty()) stream << "  c = " << var(c_) << std::endl;
-  if (!p_.empty()) stream << "  p = " << var(p_) << std::endl;
-  if (!d_.empty()) stream << "  d = " << var(d_) << std::endl;
-  if (!x_.empty()) stream << "  x = " << var(x_) << std::endl;
-  if (!z_.empty()) stream << "  z = " << var(z_) << std::endl;
-  if (!q_.empty()) stream << "  q = " << var(q_) << std::endl;
-  if (!y_.empty()) stream << "  y = " << var(y_) << std::endl;
-  if (!w_.empty()) stream << "  w = " << var(w_) << std::endl;
-  if (!u_.empty()) stream << "  u = " << var(u_) << std::endl;
-
-  if (!c_.empty()) {
-    stream << "Constants" << std::endl;
-    for (size_t c : c_) {
-      stream << "  " << var(c) << " == " << variable(c).beq << std::endl;
+  // Print the variables, including outputs
+  stream << "Model variables:" << std::endl;
+  for (Category cat : {Category::T, Category::C, Category::P, Category::D, Category::X,
+      Category::Z, Category::Q, Category::W, Category::U}) {
+    if (size(cat) > 0) {
+      stream << "  " << to_string(cat) << " = " << var(indices(cat)) << std::endl;
     }
   }
 
-  if (!d_.empty()) {
-    stream << "Dependent parameters" << std::endl;
-    for (size_t d : d_) {
-      stream << "  " << var(d) << " == " << variable(d).beq << std::endl;
+  // All variables that can have dependent variables
+  for (Category cat : {Category::C, Category::D, Category::W}) {
+    if (size(cat) > 0) {
+      stream << "List of " << description(cat) << "s (" << to_string(cat) << "):" << std::endl;
+      for (size_t c : indices(cat)) {
+        const Variable& v = variable(c);
+        stream << "  " << v.name;
+        if (v.bind >= 0) stream << " := " << variable(v.bind).v;
+        stream << std::endl;
+      }
     }
   }
 
-  if (!w_.empty()) {
-    stream << "Dependent equations" << std::endl;
-    for (size_t w : w_) {
-      stream << "  " << var(w) << " == " << variable(w).beq << std::endl;
-    }
-  }
-
-  if (!x_.empty()) {
-    stream << "Differential equations" << std::endl;
-    for (size_t k : x_) {
-      const Variable& x = variable(k);
-      casadi_assert(x.der >= 0, "No derivative variable for " + x.name);
-      const Variable& xdot = variable(x.der);
-      stream << "  \\dot{" << x.name << "} == " << xdot.name;
-      if (!xdot.beq.is_empty()) stream << " := " << xdot.beq;
-      stream << std::endl;
-    }
-  }
-
-  if (!z_.empty()) {
-    stream << "Algebraic equations" << std::endl;
-    for (size_t k : z_) {
-      const Variable& z = variable(k);
-      casadi_assert(z.alg >= 0, "No residual variable for " + z.name);
-      const Variable& alg = variable(z.alg);
-      stream << "  0 == " << alg.beq;
-      if (!alg.beq.is_empty()) stream << " := " << alg.beq;
-      stream << std::endl;
-    }
-  }
-
-  if (!q_.empty()) {
-    stream << "Quadrature equations" << std::endl;
-    for (size_t k : q_) {
-      const Variable& q = variable(k);
-      casadi_assert(q.der >= 0, "No derivative variable for " + q.name);
-      const Variable& qdot = variable(q.der);
-      stream << "  \\dot{" << q.name << "} == " << qdot.name;
-      if (!qdot.beq.is_empty()) stream << " := " << qdot.beq;
-      stream << std::endl;
-    }
-  }
-
-  if (!init_lhs_.empty()) {
-    stream << "Initial equations" << std::endl;
-    for (casadi_int k=0; k < init_lhs_.size(); ++k) {
-      stream << "  " << str(init_lhs_.at(k)) << " == " << str(init_rhs_.at(k))
+  // Print derivatives
+  for (Category cat : {Category::X, Category::Q}) {
+    if (size(cat) > 0) {
+      stream << "Time derivatives of " << description(cat) << "s (" << to_string(cat) << "):"
         << std::endl;
+      for (size_t k : indices(cat)) {
+        const Variable& v = variable(k);
+        stream << "  " << v.name << ": " << der(v.v) << std::endl;
+      }
     }
   }
 
-  if (!when_cond_.empty()) {
-    stream << "When statements" << std::endl;
-    for (casadi_int k = 0; k < when_cond_.size(); ++k) {
-      stream << "  when " << str(when_cond_.at(k)) << " < 0: " << str(when_lhs_.at(k))
-        << " := " << str(when_rhs_.at(k)) << std::endl;
+  // Outputs
+  if (!outputs_.empty()) {
+    stream << "Outputs (y):" << std::endl;
+    for (size_t k : outputs_) {
+      const Variable& v = variable(k);
+      stream << "  " << v.name << ": " << v.v << std::endl;
     }
   }
 
-  if (!y_.empty()) {
-    stream << "Output variables" << std::endl;
-    for (size_t y : y_) {
-      stream << "  " << var(y) << std::endl;
+  if (!residuals_.empty()) {
+    stream << "Algebraic equations:" << std::endl;
+    for (size_t k : residuals_) {
+      stream << "  0 == " << variable(k).v << std::endl;
+    }
+  }
+
+  if (!init_.empty()) {
+    stream << "Initial equations:" << std::endl;
+    for (size_t k : init_) {
+      const Variable& v = variable(k);
+      stream << "  " << v.name;
+      if (!v.ieq.is_empty()) stream << " := " << v.ieq;
+      stream << std::endl;
+    }
+  }
+
+  if (!when_.empty()) {
+    stream << "When equations:" << std::endl;
+    for (auto weq : when_) {
+      stream << "  when " << variable(weq.first).v << " < 0 : " << std::endl;
+      for (size_t eq : weq.second) {
+        auto v = variable(eq).parent;
+        stream << "    " << variable(v).name << " := " << variable(eq).v << std::endl;
+      }
     }
   }
 }
 
-void DaeBuilderInternal::eliminate_quad() {
-  // Move all the quadratures to the list of differential states
-  x_.insert(x_.end(), q_.begin(), q_.end());
-  q_.clear();
-}
-
-void DaeBuilderInternal::sort_d() {
-  std::vector<MX> d = var(d_), ddef = this->ddef();
-  sort_dependent(d, ddef);
-  d_.clear();
-  for (const MX& e : d) d_.push_back(find(e.name()));
-}
-
-void DaeBuilderInternal::sort_w() {
-  std::vector<MX> w = var(w_), wdef = this->wdef();
-  sort_dependent(w, wdef);
-  w_.clear();
-  for (const MX& e : w) w_.push_back(find(e.name()));
+void DaeBuilderInternal::sort(Category cat) {
+  casadi_assert(is_acyclic(cat), "Sorting not supported for category " + to_string(cat));
+  // Find new order based on interdependencies
+  std::vector<MX> v = var(indices(cat)), vdef = output(dependent_definition(cat));
+  sort_dependent(v, vdef);
+  // New order
+  std::vector<size_t> new_order;
+  for (const MX& e : v) new_order.push_back(find(e.name()));
+  std::copy(new_order.begin(), new_order.end(), indices(cat).begin());
 }
 
 void DaeBuilderInternal::sort_z(const std::vector<std::string>& z_order) {
   // Make sure lengths agree
-  casadi_assert(z_order.size() == z_.size(), "Dimension mismatch");
+  casadi_assert(z_order.size() == size(Category::Z), "Dimension mismatch");
   // Mark existing components in z
   std::vector<bool> old_z(n_variables(), false);
-  for (size_t i : z_) old_z.at(i) = true;
+  for (size_t i : indices(Category::Z)) old_z.at(i) = true;
   // New vector of z
   std::vector<size_t> new_z;
   new_z.reserve(z_order.size());
@@ -1124,40 +1349,34 @@ void DaeBuilderInternal::sort_z(const std::vector<std::string>& z_order) {
     new_z.push_back(i);
   }
   // Success: Update z
-  std::copy(new_z.begin(), new_z.end(), z_.begin());
+  std::copy(new_z.begin(), new_z.end(), indices(Category::Z).begin());
 }
 
-std::vector<size_t>& DaeBuilderInternal::ind_in(const std::string& v) {
-  switch (to_enum<DaeBuilderInternalIn>(v)) {
-  case DAE_BUILDER_T: return t_;
-  case DAE_BUILDER_P: return p_;
-  case DAE_BUILDER_U: return u_;
-  case DAE_BUILDER_X: return x_;
-  case DAE_BUILDER_Z: return z_;
-  case DAE_BUILDER_Q: return q_;
-  case DAE_BUILDER_C: return c_;
-  case DAE_BUILDER_D: return d_;
-  case DAE_BUILDER_W: return w_;
-  case DAE_BUILDER_Y: return y_;
-  default: break;
-  }
-  // Unsuccessful
-  casadi_error("Cannot access input indices for " + v);
-  // Just to resolve warnings
-  static std::vector<size_t> dummy;
-  return dummy;
+std::vector<size_t>& DaeBuilderInternal::indices(Category cat) {
+  return indices_.at(static_cast<size_t>(cat));
 }
 
-const std::vector<size_t>& DaeBuilderInternal::ind_in(const std::string& v) const {
-  return const_cast<DaeBuilderInternal*>(this)->ind_in(v);
+const std::vector<size_t>& DaeBuilderInternal::indices(Category cat) const {
+  return const_cast<DaeBuilderInternal*>(this)->indices(cat);
 }
 
-void DaeBuilderInternal::clear_all(const std::string& v) {
-  ind_in(v).clear();
+void DaeBuilderInternal::reorder(Category cat, const std::vector<size_t>& v) {
+  return reorder(to_string(cat), indices(cat), v);
 }
 
-void DaeBuilderInternal::set_all(const std::string& v, const std::vector<std::string>& name) {
-  ind_in(v) = find(name);
+void DaeBuilderInternal::reorder(const std::string& n, std::vector<size_t>& ind,
+    const std::vector<size_t>& v) const {
+  // Check if the sizes match
+  casadi_assert(ind.size() == v.size(), "Cannot reorder " + n + ": "
+    + str(v.size()) + " elements provided for " + str(ind.size()) + " components.");
+  // Mark elements to be set
+  std::vector<bool> set(n_variables(), false);
+  for (size_t i : v) set.at(i) = true;
+  // Make sure all elements are present
+  for (size_t i : ind) casadi_assert(set.at(i), "Cannot reorder " + n + ": "
+    + variable(i).name + " is missing.");
+  // Set the new order
+  std::copy(v.begin(), v.end(), ind.begin());
 }
 
 void DaeBuilderInternal::prune(bool prune_p, bool prune_u) {
@@ -1165,21 +1384,21 @@ void DaeBuilderInternal::prune(bool prune_p, bool prune_u) {
   std::vector<MX> f_in, f_out, v;
   std::vector<std::string> f_in_name, f_out_name;
   // Collect all DAE input variables with at least one entry, skip u
-  for (casadi_int i = 0; i != DAE_BUILDER_NUM_IN; ++i) {
-    if (prune_p && i == DAE_BUILDER_P) continue;
-    if (prune_u && i == DAE_BUILDER_U) continue;
-    v = input(static_cast<DaeBuilderInternalIn>(i));
+  for (Category cat : input_categories()) {
+    if (prune_p && cat == Category::P) continue;
+    if (prune_u && cat == Category::U) continue;
+    v = input(cat);
     if (!v.empty()) {
       f_in.push_back(vertcat(v));
-      f_in_name.push_back(to_string(static_cast<DaeBuilderInternalIn>(i)));
+      f_in_name.push_back(to_string(cat));
     }
   }
   // Collect all DAE output variables with at least one entry
-  for (casadi_int i = 0; i != DAE_BUILDER_NUM_OUT; ++i) {
-    v = output(static_cast<DaeBuilderInternalOut>(i));
+  for (OutputCategory cat : output_categories()) {
+    v = output(cat);
     if (!v.empty()) {
       f_out.push_back(vertcat(v));
-      f_out_name.push_back(to_string(static_cast<DaeBuilderInternalOut>(i)));
+      f_out_name.push_back(to_string(cat));
     }
   }
   // Create a function
@@ -1194,18 +1413,21 @@ void DaeBuilderInternal::prune(bool prune_p, bool prune_u) {
   // Prune p
   if (prune_p) {
     size_t np = 0;
-    for (size_t i = 0; i < p_.size(); ++i) {
-      if (!free_variables.at(p_.at(i))) p_.at(np++) = p_.at(i);
+    for (size_t i = 0; i < size(Category::P); ++i) {
+      if (!free_variables.at(indices(Category::P).at(i))) {
+        indices(Category::P).at(np++) = indices(Category::P).at(i);
+      }
     }
-    p_.resize(np);
+    indices(Category::P).resize(np);
   }
   // Prune u
   if (prune_u) {
     size_t nu = 0;
-    for (size_t i = 0; i < u_.size(); ++i) {
-      if (!free_variables.at(u_.at(i))) u_.at(nu++) = u_.at(i);
+    std::vector<size_t>& u = indices(Category::U);
+    for (size_t i = 0; i < u.size(); ++i) {
+      if (!free_variables.at(u.at(i))) u.at(nu++) = u.at(i);
     }
-    u_.resize(nu);
+    u.resize(nu);
   }
 }
 
@@ -1221,27 +1443,27 @@ void DaeBuilderInternal::tear() {
   for (auto& e : iv_on_hold) iv_set.insert(e);
   // Remove any (held or not held) iteration variables, equations from z and alg
   size_t sz = 0;
-  for (size_t k = 0; k < z_.size(); ++k) {
-    if (!iv_set.count(variable(z_[k]).name)) {
+  for (size_t k = 0; k < size(Category::Z); ++k) {
+    if (!iv_set.count(variable(Category::Z, k).name)) {
       // Non-iteration variable: Keep
-      z_.at(k) = z_.at(sz);
+      indices(Category::Z).at(k) = indices(Category::Z).at(sz);
       sz++;
     }
   }
-  z_.resize(sz);
+  indices(Category::Z).resize(sz);
   // Remove any (held or not held) iteration variables, equations from u
   sz = 0;
-  for (size_t k = 0; k < u_.size(); ++k) {
-    if (!iv_set.count(variable(u_[k]).name)) {
+  for (size_t k = 0; k < size(Category::U); ++k) {
+    if (!iv_set.count(variable(Category::U, k).name)) {
       // Non-iteration variable: Keep
-      u_.at(k) = u_.at(sz++);
+      indices(Category::U).at(k) = indices(Category::U).at(sz++);
     }
   }
-  u_.resize(sz);
+  indices(Category::U).resize(sz);
   // Add algebraic variables
-  for (auto& e : iv) z_.push_back(find(e));
+  for (auto& e : iv) indices(Category::Z).push_back(find(e));
   // Add output variables
-  for (auto& e : iv_on_hold) u_.push_back(find(e));
+  for (auto& e : iv_on_hold) indices(Category::U).push_back(find(e));
 }
 
 void DaeBuilderInternal::tearing_variables(std::vector<std::string>* res,
@@ -1271,7 +1493,7 @@ void DaeBuilderInternal::tearing_variables(std::vector<std::string>* res,
         // Look up iteration variable
         iv_name = v->name.substr(pos, end - pos);
         // Ensure that the variable exists
-        casadi_assert(has_variable(iv_name), "No such variable: " + iv_name);
+        casadi_assert(has(iv_name), "No such variable: " + iv_name);
         // Get hold indices, if any
         if (end != v->name.size()) {
           // Find next "__", read hold index for residual variable
@@ -1280,11 +1502,11 @@ void DaeBuilderInternal::tearing_variables(std::vector<std::string>* res,
           if (end == std::string::npos) end = v->name.size();
           res_hold_name = v->name.substr(pos, end - pos);
           // Ensure that the variable exists
-          casadi_assert(has_variable(res_hold_name), "No such variable: " + res_hold_name);
+          casadi_assert(has(res_hold_name), "No such variable: " + res_hold_name);
           // The remainder of the name contains iv_hold_name
           if (end != v->name.size()) {
             iv_hold_name = v->name.substr(end + 2);
-            casadi_assert(has_variable(iv_hold_name), "No such variable: " + iv_hold_name);
+            casadi_assert(has(iv_hold_name), "No such variable: " + iv_hold_name);
           }
         }
       } catch (std::exception& e) {
@@ -1365,15 +1587,19 @@ void DaeBuilderInternal::tearing_variables(std::vector<std::string>* res,
   }
 }
 
-bool DaeBuilderInternal::has_variable(const std::string& name) const {
+bool DaeBuilderInternal::has(const std::string& name) const {
   return varind_.find(name) != varind_.end();
 }
 
-std::vector<std::string> DaeBuilderInternal::all_variables() const {
+std::vector<std::string> DaeBuilderInternal::all() const {
   std::vector<std::string> r;
   r.reserve(n_variables());
   for (const Variable* v : variables_) r.push_back(v->name);
   return r;
+}
+
+std::vector<std::string> DaeBuilderInternal::all(Category cat) const {
+  return name(indices(cat));
 }
 
 size_t DaeBuilderInternal::n_mem() const {
@@ -1382,22 +1608,17 @@ size_t DaeBuilderInternal::n_mem() const {
   return n;
 }
 
-Variable& DaeBuilderInternal::new_variable(const std::string& name, casadi_int numel, const MX& v) {
+Variable& DaeBuilderInternal::new_variable(const std::string& name,
+    const std::vector<casadi_int>& dimension, const MX& expr) {
   // Name check
   casadi_assert(!name.empty(), "Name is empty string");
-  // If v is provided, make sure name and dimensions are consistent
-  if (!v.is_empty()) {
-    casadi_assert(v.is_symbolic(), "Expression not symbolic");
-    casadi_assert(name == v.name(), "Name (" + name + ") does not match expression: " + v.name());
-    casadi_assert(numel == v.numel(), "Dimension mismatch");
-  }
   // Try to find the component
-  casadi_assert(!has_variable(name), "Variable \"" + name + "\" already exists.");
+  casadi_assert(!has(name), "Variable \"" + name + "\" already exists.");
   // Index of the variable
   size_t ind = n_variables();
   // Add to the map of all variables
   varind_[name] = ind;
-  variables_.push_back(new Variable(ind, numel, name, v));
+  variables_.push_back(new Variable(ind, name, dimension, expr));
   // Clear cache
   clear_cache_ = true;
   // Return reference to new variable
@@ -1406,30 +1627,39 @@ Variable& DaeBuilderInternal::new_variable(const std::string& name, casadi_int n
 
 void DaeBuilderInternal::sanity_check() const {
   // Time
-  if (!t_.empty()) {
-    casadi_assert(t_.size() == 1, "At most one time variable allowed");
-    casadi_assert(var(t_[0]).is_scalar(), "Non-scalar time t");
+  if (size(Category::T) > 0) {
+    casadi_assert(size(Category::T) == 1, "At most one time variable allowed");
+    casadi_assert(variable(Category::T, 0).v.is_scalar(), "Non-scalar time t");
   }
-
-  // Initial equations
-  casadi_assert(init_lhs_.size() == init_rhs_.size(),
-    "init_lhs and init_rhs have different lengths");
-
-  // When statements
-  casadi_assert(when_cond_.size() == when_lhs_.size() && when_lhs_.size() == when_rhs_.size(),
-    "when_cond, when_lhs and when_rhs must all have the the same length");
 }
 
-std::string DaeBuilderInternal::qualified_name(const XmlNode& nn) {
+std::string DaeBuilderInternal::qualified_name(const XmlNode& nn, Attribute* att) {
   // std::stringstream to assemble name
   std::stringstream qn;
+  bool first_part = true;
+  if (att) *att = Attribute::VALUE;  // value attribute by default
 
+  // Loop over name parts
   for (casadi_int i=0; i<nn.size(); ++i) {
-    // Add a dot
-    if (i!=0) qn << ".";
-
     // Get the name part
-    qn << nn[i].attribute<std::string>("name");
+    std::string np = nn[i].attribute<std::string>("name");
+
+    // Check if an attribute
+    if (np == "$START") {
+      if (att) {
+        *att = Attribute::START;
+      } else {
+        casadi_error("Ignoring attribute " + np);
+      }
+      continue;
+    } else if (np == "$PRE") {
+      casadi_warning("$PRE attribute has not been implemented, ignoring");
+      continue;
+    }
+
+    // Add the name part to the variable name
+    if (!first_part) qn << ".";
+    qn << np;
 
     // Get the index, if any
     if (nn[i].size()>0) {
@@ -1437,6 +1667,9 @@ std::string DaeBuilderInternal::qualified_name(const XmlNode& nn) {
       nn[i]["exp:ArraySubscripts"]["exp:IndexExpression"]["exp:IntegerLiteral"].get(&ind);
       qn << "[" << ind << "]";
     }
+
+    // Dot prefix if a additional parts
+    first_part = false;
   }
 
   // Return the name
@@ -1447,120 +1680,152 @@ const MX& DaeBuilderInternal::var(const std::string& name) const {
   return variable(name).v;
 }
 
-MX DaeBuilderInternal::der(const std::string& name) const {
-  return variable(variable(name).der_of).v;
-}
-
 MX DaeBuilderInternal::der(const MX& var) const {
-  casadi_assert_dev(var.is_column() && var.is_symbolic());
-  return der(var.name());
+  return const_cast<DaeBuilderInternal*>(this)->der(var, false);
 }
 
-void DaeBuilderInternal::eliminate_w() {
-  // Quick return if no w
-  if (w_.empty()) return;
+MX DaeBuilderInternal::der(const MX& var, bool may_allocate) {
+  // Must be a vector
+  casadi_assert(var.is_column(), "Input expression must be a vector");
+  // Quick return if symbolic variable
+  if (var.is_symbolic()) return get_der(find(var), may_allocate);
+  // If a vertical concatenation
+  if (var.is_valid_input()) {
+    // Differentiate each primitive
+    auto var_split = var.primitives();
+    for (MX& s : var_split) s = der(s, may_allocate);
+    // Return the concatenation
+    return var.join_primitives(var_split);
+  }
+  // Handle general case: Get dependent symbolic primitives
+  std::vector<MX> dep = symvar(var);
+  // Get derivatives of dependent symbolic primitives
+  std::vector<MX> dep_der;
+  for (size_t ind : find(dep)) dep_der.push_back(get_der(ind, may_allocate));
+  // Forward directional derivative to get time derivative:
+  // dot(var) = d_var/d_dep * dot(dep)
+  std::vector<std::vector<MX>> r = {dep_der};
+  r = forward(std::vector<MX>{var}, dep, r);
+  casadi_assert_dev(r.size() == 1);
+  return vertcat(r.at(0));
+}
+
+std::string DaeBuilderInternal::unique_name(const std::string& prefix,
+    bool allow_no_prefix) const {
+  // Check if the variable exists without any prefix
+  if (allow_no_prefix && !has(prefix)) return prefix;
+  // Find the first available index
+  size_t i = 0;
+  while (has(prefix + str(i))) i++;
+  // Return the unique name
+  return prefix + str(i);
+}
+
+void DaeBuilderInternal::eliminate(Category cat) {
+  // Eliminate quadratures
+  if (cat == Category::Q) {
+    for (size_t q : indices(cat)) set_category(q, Category::X);
+    return;
+  }
+
+  // Assume dependent variable (c, d, w)
+  casadi_assert(is_acyclic(cat), "Elimination not supported for category " + to_string(cat));
+
+  // Quick return if no dependent variables
+  if (size(cat) == 0) return;
   // Clear cache after this
   clear_cache_ = true;
   // Ensure variables are sorted
-  sort_w();
+  sort(cat);
   // Expressions where the variables are also being used
   std::vector<MX> ex;
   for (const Variable* v : variables_) {
-    if (!v->beq.is_constant()) ex.push_back(v->beq);
+    if (!v->v.is_constant()) ex.push_back(v->v);
   }
   // Perform elimination
-  std::vector<MX> w = var(w_);
-  std::vector<MX> wdef = this->wdef();
-  substitute_inplace(w, wdef, ex);
-  // Clear list of dependent variables
-  w_.clear();
-  // Get binding equations
+  std::vector<size_t> ind = indices(cat);
+  std::vector<MX> v = var(ind);
+  std::vector<MX> vdef = output(dependent_definition(cat));
+  substitute_inplace(v, vdef, ex);
+  // Replace binding equations
   auto it = ex.begin();
   for (Variable* v : variables_) {
-    if (!v->beq.is_constant()) v->beq = *it++;
+    if (!v->v.is_constant()) v->v = *it++;
   }
   // Consistency check
   casadi_assert_dev(it == ex.end());
+  // Reclassify as calculated variables
+  for (size_t k : ind) {
+    categorize(variable(k).index, Category::CALCULATED);
+  }
 }
 
 void DaeBuilderInternal::lift(bool lift_shared, bool lift_calls) {
   // Not tested if w is non-empty before
-  if (!w_.empty()) casadi_warning("'w' already has entries");
+  if (size(Category::W) > 0) casadi_warning("'w' already has entries");
   // Expressions where the variables are also being used
   std::vector<MX> ex;
-  for (size_t v : x_) ex.push_back(variable(variable(v).der).beq);
-  for (size_t v : q_) ex.push_back(variable(variable(v).der).beq);
-  for (size_t v : z_) ex.push_back(variable(variable(v).alg).beq);
-  for (size_t v : y_) ex.push_back(variable(v).beq);
+  for (size_t v : indices(Category::X)) ex.push_back(variable(variable(variable(v).der).bind).v);
+  for (size_t v : indices(Category::Q)) ex.push_back(variable(variable(variable(v).der).bind).v);
+  for (size_t v : residuals_) ex.push_back(variable(v).v);
   // Lift expressions
   std::vector<MX> new_w, new_wdef;
   Dict opts{{"lift_shared", lift_shared}, {"lift_calls", lift_calls},
-    {"prefix", "w_"}, {"suffix", ""}, {"offset", static_cast<casadi_int>(w_.size())}};
+    {"prefix", "w_"}, {"suffix", ""}, {"offset", static_cast<casadi_int>(size(Category::W))}};
   extract(ex, new_w, new_wdef, opts);
   // Register as dependent variables
   for (size_t i = 0; i < new_w.size(); ++i) {
     Variable& v = new_variable(new_w.at(i).name());
     v.v = new_w.at(i);
-    v.beq = new_wdef.at(i);
-    w_.push_back(v.index);
+    Variable& v_beq = assign(v.name, new_wdef.at(i));
+    v.bind = v_beq.index;
+    indices(Category::W).push_back(v.index);
   }
   // Get expressions
   auto it = ex.begin();
-  for (size_t v : x_) variable(variable(v).der).beq = *it++;
-  for (size_t v : q_) variable(variable(v).der).beq = *it++;
-  for (size_t v : z_) variable(variable(v).alg).beq = *it++;
-  for (size_t v : y_) variable(v).beq = *it++;
+  for (size_t v : indices(Category::X)) variable(variable(variable(v).der).bind).v = *it++;
+  for (size_t v : indices(Category::Q)) variable(variable(variable(v).der).bind).v = *it++;
+  for (size_t v : residuals_) variable(v).v = *it++;
   // Consistency check
   casadi_assert_dev(it == ex.end());
 }
 
-std::string to_string(DaeBuilderInternal::DaeBuilderInternalIn v) {
+std::string to_string(OutputCategory v) {
   switch (v) {
-  case DaeBuilderInternal::DAE_BUILDER_T: return "t";
-  case DaeBuilderInternal::DAE_BUILDER_P: return "p";
-  case DaeBuilderInternal::DAE_BUILDER_U: return "u";
-  case DaeBuilderInternal::DAE_BUILDER_X: return "x";
-  case DaeBuilderInternal::DAE_BUILDER_Z: return "z";
-  case DaeBuilderInternal::DAE_BUILDER_Q: return "q";
-  case DaeBuilderInternal::DAE_BUILDER_C: return "c";
-  case DaeBuilderInternal::DAE_BUILDER_D: return "d";
-  case DaeBuilderInternal::DAE_BUILDER_W: return "w";
-  case DaeBuilderInternal::DAE_BUILDER_Y: return "y";
+  case OutputCategory::ODE: return "ode";
+  case OutputCategory::ALG: return "alg";
+  case OutputCategory::QUAD: return "quad";
+  case OutputCategory::ZERO: return "zero";
+  case OutputCategory::DDEF: return "ddef";
+  case OutputCategory::WDEF: return "wdef";
+  case OutputCategory::Y: return "y";
+  case OutputCategory::RATE: return "rate";
   default: break;
   }
   return "";
 }
 
-std::string to_string(DaeBuilderInternal::DaeBuilderInternalOut v) {
-  switch (v) {
-  case DaeBuilderInternal::DAE_BUILDER_ODE: return "ode";
-  case DaeBuilderInternal::DAE_BUILDER_ALG: return "alg";
-  case DaeBuilderInternal::DAE_BUILDER_QUAD: return "quad";
-  case DaeBuilderInternal::DAE_BUILDER_DDEF: return "ddef";
-  case DaeBuilderInternal::DAE_BUILDER_WDEF: return "wdef";
-  case DaeBuilderInternal::DAE_BUILDER_YDEF: return "ydef";
-  default: break;
+Category input_category(OutputCategory cat) {
+  switch (cat) {
+    case OutputCategory::ODE: return Category::X;
+    case OutputCategory::QUAD: return Category::Q;
+    case OutputCategory::DDEF: return Category::D;
+    case OutputCategory::WDEF: return Category::W;
+    default: break;
   }
-  return "";
+  casadi_error("No input category for " + to_string(cat));
 }
 
-std::vector<MX> DaeBuilderInternal::input(DaeBuilderInternalIn ind) const {
-  switch (ind) {
-  case DAE_BUILDER_T: return var(t_);
-  case DAE_BUILDER_C: return var(c_);
-  case DAE_BUILDER_P: return var(p_);
-  case DAE_BUILDER_D: return var(d_);
-  case DAE_BUILDER_W: return var(w_);
-  case DAE_BUILDER_U: return var(u_);
-  case DAE_BUILDER_X: return var(x_);
-  case DAE_BUILDER_Z: return var(z_);
-  case DAE_BUILDER_Q: return var(q_);
-  case DAE_BUILDER_Y: return var(y_);
-  default: return std::vector<MX>{};
-  }
+
+std::vector<MX> DaeBuilderInternal::input(Category ind) const {
+  // Operation only permitted for input categories
+  casadi_assert(is_input_category(ind),
+    to_string(ind) + " is not an input category");
+  // Get the expressions
+  return var(indices(ind));
 }
 
-std::vector<MX> DaeBuilderInternal::input(const std::vector<DaeBuilderInternalIn>& ind) const {
+std::vector<MX> DaeBuilderInternal::input(const std::vector<Category>& ind) const {
   std::vector<MX> ret(ind.size());
   for (casadi_int i=0; i<ind.size(); ++i) {
     ret[i] = vertcat(input(ind[i]));
@@ -1568,19 +1833,55 @@ std::vector<MX> DaeBuilderInternal::input(const std::vector<DaeBuilderInternalIn
   return ret;
 }
 
-std::vector<MX> DaeBuilderInternal::output(DaeBuilderInternalOut ind) const {
+std::vector<MX> DaeBuilderInternal::output(OutputCategory ind) const {
+  // If defined by index set
   switch (ind) {
-  case DAE_BUILDER_ODE: return ode();
-  case DAE_BUILDER_ALG: return alg();
-  case DAE_BUILDER_QUAD: return quad();
-  case DAE_BUILDER_DDEF: return ddef();
-  case DAE_BUILDER_WDEF: return wdef();
-  case DAE_BUILDER_YDEF: return ydef();
-  default: return std::vector<MX>();
+    case OutputCategory::Y:
+      return var(outputs_);
+    case OutputCategory::ZERO:
+      return var(event_indicators_);
+    case OutputCategory::ALG:
+      return var(residuals_);
+    case OutputCategory::RATE:
+      return var(rate_);
+    default: break;
   }
+  // Otherwise: Defined by corresponding input category
+  Category cat = input_category(ind);
+
+  // Return object
+  std::vector<MX> ret;
+  ret.reserve(size(cat));
+  // Handle different categories
+  switch (ind) {
+    case OutputCategory::ODE:  // fall-through
+    case OutputCategory::QUAD:
+      // Differential state
+      for (size_t v : indices(cat)) {
+        const Variable& x = variable(v);
+        if (x.der >= 0) {
+          // Derivative variable
+          ret.push_back(variable(variable(x.der).bind).v);
+        } else if (x.variability == Variability::DISCRETE) {
+          // Discrete variable - derivative is zero
+          ret.push_back(MX::zeros(x.v.sparsity()));
+        } else {
+          // Missing ODE?
+          casadi_error("Missing derivative for " + str(x.name));
+        }
+      }
+      break;
+    case OutputCategory::DDEF:  // fall-through
+    case OutputCategory::WDEF:
+      // Defined by binding expression
+      for (size_t d : indices(cat)) ret.push_back(variable(variable(d).bind).v);
+      break;
+    default: break;
+  }
+  return ret;
 }
 
-std::vector<MX> DaeBuilderInternal::output(const std::vector<DaeBuilderInternalOut>& ind) const {
+std::vector<MX> DaeBuilderInternal::output(const std::vector<OutputCategory>& ind) const {
   std::vector<MX> ret(ind.size());
   for (casadi_int i=0; i<ind.size(); ++i) {
     ret[i] = vertcat(output(ind[i]));
@@ -1601,9 +1902,9 @@ void DaeBuilderInternal::add_lc(const std::string& name, const std::vector<std::
 
   // Consistency checks
   casadi_assert(!f_out.empty(), "DaeBuilderInternal::add_lc: Linear combination is empty");
-  std::vector<bool> in_use(DAE_BUILDER_NUM_OUT, false);
-  for (casadi_int i=0; i<f_out.size(); ++i) {
-    DaeBuilderInternalOut oind = to_enum<DaeBuilderInternalOut>(f_out[i]);
+  std::vector<bool> in_use(enum_traits<OutputCategory>::n_enum, false);
+  for (casadi_int i=0; i < f_out.size(); ++i) {
+    auto oind = static_cast<size_t>(to_enum<OutputCategory>(f_out[i]));
     casadi_assert(!in_use[oind], "DaeBuilderInternal::add_lc: Duplicate expression " + f_out[i]);
     in_use[oind] = true;
   }
@@ -1643,7 +1944,7 @@ Function DaeBuilderInternal::create(const std::string& fname,
   }
   // Check if dependent variables are given and needed
   bool elim_w = false;
-  if (!w_.empty()) {
+  if (size(Category::W) > 0) {
     // Dependent variables exists, eliminate unless v is given
     elim_w = true;
     for (const std::string& s : s_in) {
@@ -1660,7 +1961,7 @@ Function DaeBuilderInternal::create(const std::string& fname,
     casadi_assert(!elim_w, "Lifted calls cannot be used if dependent variables are eliminated");
     // Only lift calls if really needed
     lifted_calls = false;
-    for (const MX& vdef_comp : wdef()) {
+    for (const MX& vdef_comp : output(OutputCategory::WDEF)) {
       if (vdef_comp.is_output()) {
         // There are indeed function calls present
         lifted_calls = true;
@@ -1677,7 +1978,7 @@ Function DaeBuilderInternal::create(const std::string& fname,
   std::vector<MX> ret_in = ret.mx_in();
   std::vector<MX> ret_out = ret(ret_in);
   // Offsets in v
-  std::vector<casadi_int> h_offsets = offset(var(w_));
+  std::vector<casadi_int> h_offsets = offset(var(indices(Category::W)));
   // Split "w", "lam_wdef" into components
   std::vector<MX> v_in, lam_vdef_in;
   for (size_t i = 0; i < s_in.size(); ++i) {
@@ -1689,11 +1990,11 @@ Function DaeBuilderInternal::create(const std::string& fname,
   }
   // Map dependent variables into index in vector
   std::map<MXNode*, size_t> v_map;
-  for (size_t i = 0; i < w_.size(); ++i) {
-    v_map[var(w_.at(i)).get()] = i;
+  for (size_t i = 0; i < size(Category::W); ++i) {
+    v_map[var(Category::W, i).get()] = i;
   }
   // Definitions of w
-  std::vector<MX> wdef = this->wdef();
+  std::vector<MX> wdef = output(OutputCategory::WDEF);
   // Collect all the call nodes
   std::map<MXNode*, CallIO> call_nodes;
   for (size_t vdefind = 0; vdefind < wdef.size(); ++vdefind) {
@@ -1788,7 +2089,7 @@ MX DaeBuilderInternal::jac_vdef_v_from_calls(std::map<MXNode*, CallIO>& call_nod
   // All blocks for this block row
   std::map<size_t, MX> jac_brow;
   // Definitions of w
-  std::vector<MX> wdef = this->wdef();
+  std::vector<MX> wdef = output(OutputCategory::WDEF);
   // Collect all Jacobian blocks
   for (size_t vdefind = 0; vdefind < wdef.size(); ++vdefind) {
     // Current element handled
@@ -1857,9 +2158,9 @@ MX DaeBuilderInternal::hess_v_v_from_calls(std::map<MXNode*, CallIO>& call_nodes
   // All blocks for a block row
   std::map<size_t, MX> hess_brow;
   // Loop over block rows
-  for (size_t vind1 = 0; vind1 < w_.size(); ++vind1) {
+  for (size_t vind1 = 0; vind1 < size(Category::W); ++vind1) {
     // Current element handled
-    const MX& vref = var(w_.at(vind1));
+    const MX& vref = var(Category::W, vind1);
     // Update vertical offset
     voffset_begin = voffset_end;
     voffset_end += vref.numel();
@@ -1936,6 +2237,8 @@ void DaeBuilderInternal::clear_cache() const {
 }
 
 const Function& DaeBuilderInternal::oracle(bool sx, bool elim_w, bool lifted_calls) const {
+  casadi_assert(symbolic_, "DaeBuilder oracle only available if symbolic representation");
+
   // Clear cache now, if necessary
   if (clear_cache_) clear_cache();
   // Create an MX oracle, if needed
@@ -1950,40 +2253,40 @@ const Function& DaeBuilderInternal::oracle(bool sx, bool elim_w, bool lifted_cal
     // Do we need to substitute out v
     bool subst_v = false;
     // Collect all DAE input variables
-    for (size_t i = 0; i != DAE_BUILDER_NUM_IN; ++i) {
-      if (i == DAE_BUILDER_Y) continue;  // fixme2
-      f_in_name.push_back(to_string(static_cast<DaeBuilderInternalIn>(i)));
-      v = input(static_cast<DaeBuilderInternalIn>(i));
-      if (v.empty()) {
-        f_in.push_back(MX(0, 1));
+    for (Category cat : input_categories()) {
+      v = input(cat);
+      if (elim_w && cat == Category::W) {
+        if (!v.empty()) subst_v = true;
       } else {
-        if (elim_w && i == DAE_BUILDER_W) {
-          subst_v = true;
+        if (v.empty()) {
+          f_in.push_back(MX(0, 1));
         } else {
           f_in.push_back(vertcat(v));
         }
+        f_in_name.push_back(to_string(cat));
       }
     }
+
     // Collect all DAE output variables
-    for (size_t i = 0; i != DAE_BUILDER_NUM_OUT; ++i) {
-      f_out_name.push_back(to_string(static_cast<DaeBuilderInternalOut>(i)));
-      v = output(static_cast<DaeBuilderInternalOut>(i));
+    for (OutputCategory cat : output_categories()) {
+      f_out_name.push_back(to_string(cat));
+      v = output(cat);
       if (v.empty()) {
         f_out.push_back(MX(0, 1));
       } else {
-        if (i == DAE_BUILDER_WDEF) wdef_ind = f_out.size();
+        if (cat == OutputCategory::WDEF) wdef_ind = f_out.size();
         f_out.push_back(vertcat(v));
       }
     }
     // Eliminate v from inputs
     if (subst_v) {
       // Dependent variable definitions
-      std::vector<MX> wdef = this->wdef();
+      std::vector<MX> wdef = output(OutputCategory::WDEF);
       // Perform in-place substitution
-      substitute_inplace(var(w_), wdef, f_out, false);
+      substitute_inplace(var(Category::W), wdef, f_out, false);
     } else if (lifted_calls && wdef_ind >= 0) {
       // Dependent variable definitions
-      std::vector<MX> wdef = this->wdef();
+      std::vector<MX> wdef = output(OutputCategory::WDEF);
       // Remove references to call nodes
       for (MX& wdefref : wdef) {
         if (wdefref.is_output()) wdefref = MX::zeros(wdefref.sparsity());
@@ -2081,7 +2384,8 @@ const MX& DaeBuilderInternal::CallIO::hess(casadi_int iind1, casadi_int iind2) c
 
 void DaeBuilderInternal::sort_dependent(std::vector<MX>& v, std::vector<MX>& vdef) {
   // Form function to evaluate dependent variables
-  Function vfcn("vfcn", {vertcat(v)}, {vertcat(vdef)}, {"v"}, {"vdef"});
+  Function vfcn("vfcn", {vertcat(v)}, {vertcat(vdef)}, {"v"}, {"vdef"},
+    Dict{{"allow_free", true}});
   // Is any variable vector-valued?
   bool any_vector_valued = false;
   for (const MX& v_i : v) {
@@ -2112,7 +2416,7 @@ void DaeBuilderInternal::sort_dependent(std::vector<MX>& v, std::vector<MX>& vde
     }
     // Recreate vfcn with smaller dimensions
     vfcn = Function(vfcn.name(), {vertcat(vfcn_in)}, {vertcat(vfcn_out)},
-      vfcn.name_in(), vfcn.name_out());
+      vfcn.name_in(), vfcn.name_out(), {{"allow_free", true}});
   }
   // Calculate sparsity pattern of dvdef/dv
   Sparsity Jv = vfcn.jac_sparsity(0, 0);
@@ -2138,13 +2442,13 @@ Function DaeBuilderInternal::dependent_fun(const std::string& fname,
   // Are we calculating d and/or w
   bool calc_d = false, calc_w = false;
   // Convert outputs to enums
-  std::vector<DaeBuilderInternalIn> v_out;
+  std::vector<Category> v_out;
   v_out.reserve(v_out.size());
   for (const std::string& s : s_out) {
-    DaeBuilderInternalIn e = to_enum<DaeBuilderInternalIn>(s);
-    if (e == DAE_BUILDER_D) {
+    Category e = to_enum<Category>(s);
+    if (e == Category::D) {
       calc_d = true;
-    } else if (e == DAE_BUILDER_W) {
+    } else if (e == Category::W) {
       calc_w = true;
     } else {
       casadi_error("Can only calculate d and/or w");
@@ -2154,34 +2458,34 @@ Function DaeBuilderInternal::dependent_fun(const std::string& fname,
   // Consistency check
   casadi_assert(calc_d || calc_w, "Nothing to calculate");
   // Convert inputs to enums
-  std::vector<DaeBuilderInternalIn> v_in;
+  std::vector<Category> v_in;
   v_in.reserve(v_in.size());
   for (const std::string& s : s_in) {
-    DaeBuilderInternalIn e = to_enum<DaeBuilderInternalIn>(s);
-    if (calc_d && e == DAE_BUILDER_D) casadi_error("'d' cannot be both input and output");
-    if (calc_w && e == DAE_BUILDER_W) casadi_error("'w' cannot be both input and output");
+    Category e = to_enum<Category>(s);
+    if (calc_d && e == Category::D) casadi_error("'d' cannot be both input and output");
+    if (calc_w && e == Category::W) casadi_error("'w' cannot be both input and output");
     v_in.push_back(e);
   }
   // Collect input expressions
   std::vector<MX> f_in;
   f_in.reserve(s_in.size());
-  for (DaeBuilderInternalIn v : v_in) f_in.push_back(vertcat(input(v)));
+  for (Category v : v_in) f_in.push_back(vertcat(input(v)));
   // Collect output expressions
   std::vector<MX> f_out;
   f_out.reserve(s_out.size());
-  for (DaeBuilderInternalIn v : v_out) f_out.push_back(vertcat(input(v)));
+  for (Category v : v_out) f_out.push_back(vertcat(input(v)));
   // Variables to be substituted
   std::vector<MX> dw, dwdef;
   if (calc_d) {
-    std::vector<MX> d = var(d_);
+    std::vector<MX> d = var(indices(Category::D));
     dw.insert(dw.end(), d.begin(), d.end());
-    std::vector<MX> ddef = this->ddef();
+    std::vector<MX> ddef = output(OutputCategory::DDEF);
     dwdef.insert(dwdef.end(), ddef.begin(), ddef.end());
   }
   if (calc_w) {
-    std::vector<MX> w = var(w_);
+    std::vector<MX> w = var(indices(Category::W));
     dw.insert(dw.end(), w.begin(), w.end());
-    std::vector<MX> wdef = this->wdef();
+    std::vector<MX> wdef = output(OutputCategory::WDEF);
     dwdef.insert(dwdef.end(), wdef.begin(), wdef.end());
   }
   // Perform elimination
@@ -2189,6 +2493,76 @@ Function DaeBuilderInternal::dependent_fun(const std::string& fname,
   // Assemble return function
   return Function(fname, f_in, f_out, s_in, s_out);
 }
+
+Function DaeBuilderInternal::transition(const std::string& fname, casadi_int index,
+    bool dummy_index_input) const {
+
+  // Make sure that the index is valid
+  casadi_assert(index >= 0 && index < when_.size(), "Illegal event index");
+
+  // Get input expressions for the oracle
+  std::vector<MX> oracle_in = oracle().mx_in();
+
+  // Input expressions for the event functions, without the index
+  std::vector<MX> ret_in(DYN_NUM_IN);
+  ret_in[DYN_T] = oracle_in.at(static_cast<size_t>(Category::T));
+  ret_in[DYN_X] = oracle_in.at(static_cast<size_t>(Category::X));
+  ret_in[DYN_Z] = oracle_in.at(static_cast<size_t>(Category::Z));
+  ret_in[DYN_P] = oracle_in.at(static_cast<size_t>(Category::P));
+  ret_in[DYN_U] = oracle_in.at(static_cast<size_t>(Category::U));
+
+  // When equation left-hand sides and right-hand sides
+  std::vector<MX> when_lhs, when_rhs;
+  for (size_t eq : when_.at(index).second) {
+    auto v = variable(eq).parent;
+    when_lhs.push_back(variable(v).v);
+    when_rhs.push_back(variable(eq).v);
+  }
+
+  // Expressions for x and z after event
+  std::vector<MX> ret_out = {ret_in[DYN_X], ret_in[DYN_Z]};
+  ret_out = MX::substitute(ret_out, when_lhs, when_rhs);
+
+  // Remove dependent variables, if any
+  if (size(Category::W) > 0) {
+    // Dependent variable definitions
+    std::vector<MX> wdef = output(OutputCategory::WDEF);
+    // Perform in-place substitution
+    substitute_inplace(var(Category::W), wdef, ret_out, false);
+  }
+
+  // Check if a dummy index input needes to be included
+  if (dummy_index_input) {
+    // Create a function with the transition input signature
+    ret_in.insert(ret_in.begin(), MX());
+    return Function(fname, ret_in, ret_out, event_in(), event_out());
+  } else {
+    // Create a function with the DAE function input signature
+    return Function(fname, ret_in, ret_out, dyn_in(), event_out());
+  }
+}
+
+Function DaeBuilderInternal::transition(const std::string& fname) const {
+  // If no events, return null
+  if (when_.empty()) return Function();
+
+  // If just a single event, create an event function with a dummy index input
+  if (when_.size() == 1) return transition(fname, 0, true);
+
+  // Create separate transition functions for each event
+  std::vector<Function> f_all;
+  for (casadi_int i = 0; i < when_.size(); ++i) {
+    f_all.push_back(transition(fname + "_" + str(i), i));
+  }
+
+  // Make the last function the default value in the switch
+  Function f_def = f_all.back();
+  f_all.pop_back();
+
+  // Create a switch function
+  return Function::conditional(fname, f_all, f_def);
+}
+
 
 Function DaeBuilderInternal::fmu_fun(const std::string& name,
     const std::vector<std::string>& name_in,
@@ -2207,6 +2581,7 @@ Function DaeBuilderInternal::fmu_fun(const std::string& name,
     }
     has_in = true;
   }
+
   // Scheme outputs
   std::vector<std::string> scheme_out;
   bool has_out = false;
@@ -2241,16 +2616,19 @@ Function DaeBuilderInternal::fmu_fun(const std::string& name,
     for (auto&& s : dyn_in()) scheme[s] = std::vector<size_t>();
     for (auto&& s : dyn_out()) scheme[s] = std::vector<size_t>();
     // Default IO scheme
-    scheme["t"] = ind_in("t");
-    scheme["x"] = ind_in("x");
-    scheme["u"] = ind_in("u");
-    scheme["z"] = ind_in("z");
-    scheme["p"] = ind_in("p");
-    scheme["ode"] = x_;
+    scheme["t"] = indices(Category::T);
+    scheme["x"] = indices(Category::X);
+    scheme["u"] = indices(Category::U);
+    scheme["z"] = indices(Category::Z);
+    scheme["p"] = indices(Category::P);
+    scheme["ode"] = indices(Category::X);
     for (size_t& i : scheme["ode"]) i = variable(i).der;
-    scheme["alg"] = z_;
-    casadi_assert(z_.empty(), "Not implemented)");
-    scheme["ydef"] = y_;
+    scheme["quad"] = indices(Category::Q);
+    for (size_t& i : scheme["quad"]) i = variable(i).der;
+    scheme["alg"] = indices(Category::Z);
+    casadi_assert(size(Category::Z) == 0, "Not implemented)");
+    scheme["y"] = outputs_;
+    scheme["rate"] = rate_;
   }
   // Auxilliary variables, if any
   std::vector<std::string> aux;
@@ -2262,7 +2640,8 @@ Function DaeBuilderInternal::fmu_fun(const std::string& name,
     }
   }
   // New FMU instance (to be shared between derivative functions)
-  Fmu fmu(name, FmuApi::FMI2, this, scheme_in, scheme_out, scheme, aux);
+  Fmu fmu(name, fmi_major_ >= 3 ? FmuApi::FMI3 : FmuApi::FMI2, this,
+    scheme_in, scheme_out, scheme, aux);
 
   // Crete new function
   return Function::create(new FmuFunction(name, fmu, name_in, name_out), opts);
@@ -2274,205 +2653,619 @@ Function DaeBuilderInternal::gather_eq() const {
   // Names of outputs
   std::vector<std::string> f_out_name;
   // Get all expressions
-  for (casadi_int i = 0; i != DAE_BUILDER_NUM_OUT; ++i) {
-    std::vector<MX> v = output(static_cast<DaeBuilderInternalOut>(i));
+  for (OutputCategory cat : output_categories()) {
+    std::vector<MX> v = output(cat);
     if (!v.empty()) {
       f_out.push_back(vertcat(v));
-      f_out_name.push_back(to_string(static_cast<DaeBuilderInternalOut>(i)));
+      f_out_name.push_back(to_string(cat));
     }
   }
   // Construct function
-  return Function("all_eq", {}, f_out, {}, f_out_name);
+  return Function("all_eq", {}, f_out, {}, f_out_name, {{"allow_free", true}});
+}
+
+const MX& DaeBuilderInternal::time() const {
+  casadi_assert(has_t(), "No explicit time variable");
+  return var(indices(Category::T).at(0));
+}
+
+bool DaeBuilderInternal::has_t() const {
+  return size(Category::T) > 0;
 }
 
 std::vector<MX> DaeBuilderInternal::cdef() const {
   std::vector<MX> ret;
-  ret.reserve(c_.size());
-  for (size_t c : c_) ret.push_back(variable(c).beq);
+  ret.reserve(size(Category::C));
+  for (size_t c : indices(Category::C)) ret.push_back(variable(variable(c).bind).v);
   return ret;
 }
 
-std::vector<MX> DaeBuilderInternal::ddef() const {
+std::vector<MX> DaeBuilderInternal::init_lhs() const {
   std::vector<MX> ret;
-  ret.reserve(d_.size());
-  for (size_t d : d_) ret.push_back(variable(d).beq);
-  return ret;
-}
-
-std::vector<MX> DaeBuilderInternal::wdef() const {
-  std::vector<MX> ret;
-  ret.reserve(w_.size());
-  for (size_t w : w_) ret.push_back(variable(w).beq);
-  return ret;
-}
-
-std::vector<MX> DaeBuilderInternal::ydef() const {
-  std::vector<MX> ret;
-  ret.reserve(y_.size());
-  for (size_t v : y_) ret.push_back(variable(v).beq);
-  return ret;
-}
-
-std::vector<MX> DaeBuilderInternal::ode() const {
-  std::vector<MX> ret;
-  ret.reserve(x_.size());
-  for (size_t v : x_) {
-    const Variable& x = variable(v);
-    casadi_assert(x.der >= 0, "No derivative variable for " + x.name);
-    const Variable& xdot = variable(x.der);
-    ret.push_back(xdot.beq);
+  ret.reserve(init_.size());
+  for (size_t ind : init_) {
+    ret.push_back(variable(ind).v);
   }
   return ret;
 }
 
-std::vector<MX> DaeBuilderInternal::alg() const {
+std::vector<MX> DaeBuilderInternal::init_rhs() const {
   std::vector<MX> ret;
-  ret.reserve(z_.size());
-  for (size_t v : z_) {
-    const Variable& z = variable(v);
-    casadi_assert(z.alg >= 0, "No residual variable for " + z.name);
-    const Variable& alg = variable(z.alg);
-    ret.push_back(alg.beq);
+  ret.reserve(init_.size());
+  for (size_t ind : init_) {
+    ret.push_back(variable(ind).ieq);
   }
   return ret;
 }
 
-std::vector<MX> DaeBuilderInternal::quad() const {
-  std::vector<MX> ret;
-  ret.reserve(q_.size());
-  for (size_t v : q_) {
-    const Variable& q = variable(v);
-    casadi_assert(q.der >= 0, "No derivative variable for " + q.name);
-    const Variable& qdot = variable(q.der);
-    ret.push_back(qdot.beq);
+Variability DaeBuilderInternal::default_variability(Causality causality, Type type) {
+  // Default variability per FMI 3.0.2, section 2.4.7.4
+  // "The default for variables of causality parameter, structural parameter or
+  // calculated parameter is fixed."
+  if (causality == Causality::PARAMETER || causality == Causality::CALCULATED_PARAMETER) {
+    return Variability::FIXED;
   }
-  return ret;
-}
-
-MX DaeBuilderInternal::add_t(const std::string& name) {
-  casadi_assert(t_.empty(), "'t' already defined");
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.causality = Causality::INDEPENDENT;
-  t_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_p(const std::string& name) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::FIXED;
-  v.causality = Causality::INPUT;
-  p_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_u(const std::string& name) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::CONTINUOUS;
-  v.causality = Causality::INPUT;
-  u_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_x(const std::string& name) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::CONTINUOUS;
-  v.causality = Causality::LOCAL;
-  x_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_z(const std::string& name) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::CONTINUOUS;
-  v.causality = Causality::LOCAL;
-  z_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_q(const std::string& name) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::CONTINUOUS;
-  v.causality = Causality::LOCAL;
-  q_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_c(const std::string& name, const MX& new_cdef) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::CONSTANT;
-  v.beq = new_cdef;
-  c_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_d(const std::string& name, const MX& new_ddef) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::FIXED;
-  v.causality = Causality::CALCULATED_PARAMETER;
-  v.beq = new_ddef;
-  d_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_w(const std::string& name, const MX& new_wdef) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.variability = Variability::CONTINUOUS;
-  v.beq = new_wdef;
-  w_.push_back(v.index);
-  return v.v;
-}
-
-MX DaeBuilderInternal::add_y(const std::string& name, const MX& new_ydef) {
-  Variable& v = new_variable(name);
-  v.v = MX::sym(name);
-  v.causality = Causality::OUTPUT;
-  v.beq = new_ydef;
-  y_.push_back(v.index);
-  return v.v;
-}
-
-void DaeBuilderInternal::set_ode(const std::string& name, const MX& ode_rhs) {
-  // Find the state variable
-  const Variable& x = variable(name);
-  // Check if derivative exists
-  if (x.der < 0) {
-    // New derivative variable
-    Variable& xdot = new_variable("der_" + name);
-    xdot.v = MX::sym(xdot.name);
-    xdot.causality = Causality::LOCAL;
-    xdot.der_of = find(name);
-    xdot.beq = ode_rhs;
-    variable(name).der = xdot.index;
+  // "The default for variables of type Float32 and Float64 and causality other
+  // than parameter, structuralParameter or calculatedParameter is continuous"
+  if (type == Type::FLOAT32 || type == Type::FLOAT64) {
+    return Variability::CONTINUOUS;
   } else {
-    // Variable exists: Update binding equation
-    variable(x.der).beq = ode_rhs;
+    return Variability::DISCRETE;
   }
 }
 
-void DaeBuilderInternal::set_alg(const std::string& name, const MX& alg_rhs) {
+Initial DaeBuilderInternal::default_initial(Causality causality, Variability variability) {
+  // According to table in FMI 2.0.2 specification, section 2.2.7
+  switch (variability) {
+  case Variability::CONSTANT:
+    if (causality == Causality::OUTPUT || causality == Causality::LOCAL)
+      return Initial::EXACT;
+    break;
+  case Variability::FIXED:
+    // Fall-through
+  case Variability::TUNABLE:
+    if (causality == Causality::PARAMETER)
+      return Initial::EXACT;
+    else if (causality == Causality::CALCULATED_PARAMETER || causality == Causality::LOCAL)
+      return Initial::CALCULATED;
+    break;
+  case Variability::DISCRETE:
+  // Fall-through
+  case Variability::CONTINUOUS:
+    if (causality == Causality::OUTPUT || causality == Causality::LOCAL)
+      return Initial::CALCULATED;
+    break;
+  default: break;
+  }
+  // Initial value not available
+  return Initial::NA;
+}
+
+Variable& DaeBuilderInternal::add(const std::string& name, Causality causality,
+  Variability variability, const Dict& opts) {
+  // No expression provided
+  return add(name, causality, variability, MX(), opts);
+}
+
+Variable& DaeBuilderInternal::add(const std::string& name, Causality causality,
+    Variability variability, const MX& expr, const Dict& opts) {
+  // Default options
+  std::string description, type, initial, unit, display_unit;
+  std::vector<casadi_int> dimension = {1};
+  double min = -casadi::inf, max = casadi::inf, nominal = 1;
+  std::vector<double> start;
+  // Read options
+  for (auto&& op : opts) {
+    if (op.first=="dimension") {
+      dimension = op.second.to_int_vector();
+    } else if (op.first=="description") {
+      description = op.second.to_string();
+    } else if (op.first=="unit") {
+      unit = op.second.to_string();
+    } else if (op.first=="display_unit") {
+      display_unit = op.second.to_string();
+    } else if (op.first=="min") {
+      min = op.second.to_double();
+    } else if (op.first=="max") {
+      max = op.second.to_double();
+    } else if (op.first=="nominal") {
+      nominal = op.second.to_double();
+    } else if (op.first=="start") {
+      if (op.second.can_cast_to(OT_DOUBLE)) {
+        start.resize(1, op.second.to_double());
+      } else {
+        start = op.second.to_double_vector();
+      }
+    } else if (op.first=="type") {
+      type = op.second.to_string();
+    } else if (op.first=="initial") {
+      initial = op.second.to_string();
+    } else {
+      casadi_error("No such option: " + op.first);
+    }
+  }
+  // Create a new variable
+  Variable& v = new_variable(name, dimension, expr);
+  v.description = description;
+  if (!type.empty()) v.type = to_enum<Type>(type);
+  v.causality = causality;
+  v.variability = variability;
+  if (!start.empty()) v.start = start;
+  if (!initial.empty()) v.initial = to_enum<Initial>(initial);
+  if (!unit.empty()) v.unit = unit;
+  if (!display_unit.empty()) v.display_unit = display_unit;
+  if (min != -casadi::inf) v.min = min;
+  if (max != casadi::inf) v.max = max;
+  v.nominal = nominal;
+  // Handle different categories
+  switch (causality) {
+    case Causality::PARAMETER:
+      // Parameter
+      if (variability == Variability::TUNABLE) {
+        categorize(v.index, Category::P);
+      } else if (variability == Variability::FIXED) {
+        categorize(v.index, Category::C);
+      } else {
+        casadi_error("'parameter' causality requires 'fixed' or 'tunable' variability");
+      }
+      break;
+    case Causality::CALCULATED_PARAMETER:
+      casadi_assert(variability == Variability::FIXED || variability == Variability::TUNABLE,
+          "'calculatedParameter' causality requires 'fixed' or 'tunable' variability");
+      categorize(v.index, Category::D);
+      break;
+    case Causality::INPUT:
+      // Control
+      casadi_assert(variability == Variability::CONTINUOUS
+        || variability == Variability::DISCRETE,
+        "'input' causality requires 'continuous' or 'discrete' variability");
+      categorize(v.index, Category::U);
+      break;
+    case Causality::OUTPUT:
+      // Type determined by providing equation, unless discrete variability
+      if (variability == Variability::CONSTANT) {
+        // Constant output
+        categorize(v.index, Category::C);
+      } else if (variability == Variability::DISCRETE) {
+        // Discrete variables are considered states with zero derivatives
+        categorize(v.index, detect_quad_ ? Category::Q : Category::X);
+      } else if (variability == Variability::CONTINUOUS) {
+        // Continuous variables are considered algebraic variables until given a defining equation
+        categorize(v.index, Category::Z);
+      } else {
+        casadi_error("'output' causality requires 'constant', 'continuous' or "
+          "'discrete' variability");
+      }
+      break;
+    case Causality::LOCAL:
+      // Type determined by providing equation, unless discrete variability
+      if (variability == Variability::CONSTANT) {
+        // Constant local
+        categorize(v.index, Category::C);
+      } else if (variability == Variability::DISCRETE) {
+        // Discrete variables are considered states with zero derivatives
+        categorize(v.index, detect_quad_ ? Category::Q : Category::X);
+      } else if (variability == Variability::CONTINUOUS) {
+        // Continuous variables are considered algebraic variables until given a defining equation
+        categorize(v.index, Category::Z);
+      } else if (variability == Variability::FIXED || variability == Variability::TUNABLE) {
+        // Fixed or tunable local
+        categorize(v.index, Category::D);
+      } else {
+        casadi_error("'output' causality requires 'constant', 'fixed', 'tunable', 'discrete' or "
+          "'continuous' variability");
+      }
+      break;
+    case Causality::INDEPENDENT:
+      // Independent variable
+      casadi_assert(!has_t(), "'t' already defined");
+      casadi_assert(variability == Variability::CONTINUOUS,
+        "Independent variable must be continuous");
+      categorize(v.index, Category::T);
+      break;
+    default:
+      casadi_error("Unknown causality: " + to_string(causality));
+  }
+  // If an output, add to list of outputs
+  if (causality == Causality::OUTPUT) outputs_.push_back(v.index);
+  // Return variable reference
+  return v;
+}
+
+Variable& DaeBuilderInternal::add(const std::string& name, Causality causality, const Dict& opts) {
+  // Get type
+  Type type = Type::FLOAT64;
+  if (opts.find("type") != opts.end()) {
+    type = to_enum<Type>(opts.at("type").to_string());
+  }
+
+  // Default variability per FMI 3.0.2, section 2.4.7.4
+  return add(name, causality, default_variability(causality, type), opts);
+}
+
+void DaeBuilderInternal::categorize(size_t ind, Category cat) {
+  // Get variable reference
+  Variable& v = variable(ind);
+  // If same category, quick return
+  if (v.category == cat) return;
+  // Remove from current category, if any
+  if (v.category != Category::NUMEL) {
+    remove(indices(v.category), ind);
+    v.category = Category::NUMEL;
+  }
+  // Add to new category, if any
+  if (cat != Category::NUMEL) {
+    std::vector<size_t>& indices = this->indices(cat);
+    if (is_acyclic(cat)) {
+      indices.push_back(ind);
+    } else {
+      insert(indices, ind);
+    }
+    v.category = cat;
+  }
+}
+
+void DaeBuilderInternal::insert(std::vector<size_t>& v, size_t ind) const {
+  // Keep list ordered: Insert at location corresponding to model variable index
+  size_t loc = v.size();
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (variable(v[i]).index >= ind) {
+      loc = i;
+      break;
+    }
+  }
+  v.insert(v.begin() + loc, ind);
+}
+
+void DaeBuilderInternal::remove(std::vector<size_t>& v, size_t ind) const {
+  for (auto it = v.begin(); it != v.end(); ++it) {
+    if (*it == ind) {
+      v.erase(it);
+      return;
+    }
+  }
+  casadi_error("Variable not found");
+}
+
+Causality DaeBuilderInternal::causality(size_t ind) const {
+  return variable(ind).causality;
+}
+
+void DaeBuilderInternal::set_causality(size_t ind, Causality causality) {
+  // Get variable reference
+  Variable& v = variable(ind);
+  // Quick return if same causality
+  if (v.causality == causality) return;
+  // Handle permitted changes
+  if (v.causality == Causality::LOCAL && causality == Causality::OUTPUT) {
+    // Add to list of outputs
+    insert(outputs_, v.index);
+  } else if (v.causality == Causality::OUTPUT && causality == Causality::LOCAL) {
+    // Remove from list of outputs
+    remove(outputs_, v.index);
+  } else {
+    // Not possible
+    casadi_error("Cannot change causality of " + v.name + " which is of category '"
+      + to_string(v.category) + "'");
+  }
+  // Success: Update causality
+  v.causality = causality;
+  // The oracle would need to be regenerated after changes to the categorization
+  clear_cache_ = true;
+}
+
+Variability DaeBuilderInternal::variability(size_t ind) const {
+  return variable(ind).variability;
+}
+
+void DaeBuilderInternal::set_variability(size_t ind, Variability variability) {
+  // Get variable reference
+  Variable& v = variable(ind);
+  // Quick return if same variability
+  if (v.variability == variability) return;
+  // Update category: See comment for public interface
+  switch (v.category) {
+    case Category::U:
+      if (variability == Variability::FIXED) {
+        // Make fixed parameter
+        categorize(v.index, Category::C);
+        v.causality = Causality::PARAMETER;
+      } else if (variability == Variability::TUNABLE) {
+        // Make tunable parameter
+        categorize(v.index, Category::P);
+        v.causality = Causality::PARAMETER;
+      } else {
+        // Not possible
+        casadi_error("The variability of " + v.name + ", which is of category 'u', can only be "
+          "changed to 'fixed' (for no category) or 'tunable' (for category 'p')");
+      }
+      break;
+    case Category::P:
+      if (variability == Variability::CONTINUOUS) {
+        // Make input
+        categorize(v.index, Category::U);
+        v.causality = Causality::INPUT;
+      } else if (variability == Variability::FIXED) {
+        // Make fixed parameter
+        categorize(v.index, Category::C);
+        v.causality = Causality::PARAMETER;
+      } else {
+        // Not possible
+        casadi_error("The variability of " + v.name + ", which is of category 'p', can only be "
+          "changed to 'continuous' (for category 'u') or 'fixed' (for no category)");
+      }
+      break;
+    case Category::C:
+      if (variability == Variability::CONTINUOUS) {
+        // Make input
+        categorize(v.index, Category::U);
+        v.causality = Causality::INPUT;
+      } else if (variability == Variability::TUNABLE) {
+        // Make tunable parameter
+        categorize(v.index, Category::P);
+        v.causality = Causality::PARAMETER;
+      } else {
+        // Not possible
+        casadi_error("The variability of " + v.name + ", which is of type 'c', can only be "
+          "changed to 'continuous' (for category 'u') or 'tunable' (for category 'p')");
+      }
+      break;
+    default:
+      casadi_error("Cannot change variability of " + v.name + ", which is of category '"
+        + to_string(v.category) + "'");
+  }
+  // Success: Update variability
+  v.variability = variability;
+  // The oracle would need to be regenerated after changes to the categorization
+  clear_cache_ = true;
+}
+
+Category DaeBuilderInternal::category(size_t ind) const {
+  return variable(ind).category;
+}
+
+void DaeBuilderInternal::set_category(size_t ind, Category cat) {
+  // Get variable reference
+  Variable& v = variable(ind);
+  // Quick return if same category
+  if (v.category == cat) return;
+  // Update category: See comment for public interface
+  switch (cat) {
+    case Category::U:
+      if (v.category == Category::P || v.category == Category::C) {
+        return set_variability(v.index, Variability::CONTINUOUS);
+      }
+      break;
+    case Category::P:
+      if (v.category == Category::U || v.category == Category::C) {
+        return set_variability(v.index, Variability::TUNABLE);
+      }
+      break;
+    case Category::C:
+      if (v.category == Category::U || v.category == Category::P) {
+        return set_variability(v.index, Variability::FIXED);
+      }
+      break;
+    case Category::X:
+      if (v.category == Category::Q && !v.in_rhs) {
+        return categorize(v.index, Category::X);
+      }
+      break;
+    case Category::Q:
+      if (v.category == Category::X) {
+        return categorize(v.index, Category::Q);
+      }
+      break;
+    default:
+      break;
+  }
+  // Failure if reached this point
+  casadi_error("Cannot change category of " + v.name + " from '"
+    + to_string(v.category) + "' to '" + to_string(cat) + "'");
+}
+
+void DaeBuilderInternal::eq(const MX& lhs, const MX& rhs, const Dict& opts) {
+  // Read options
+  for (auto&& op : opts) {
+    casadi_error("No such option: " + op.first);
+  }
+  // Make sure vectors
+  casadi_assert(lhs.is_column(), "Left-hand-side must be a column vector");
+  casadi_assert(rhs.is_column(), "Right-hand-side must be a column vector");
+  // Make sure dense
+  if (!lhs.is_dense()) return eq(densify(lhs), rhs, opts);
+  if (!rhs.is_dense()) return eq(lhs, densify(rhs), opts);
+  // Make sure dimensions agree
+  if (lhs.size1() != rhs.size1()) {
+    // Handle mismatching dimnensions by recursion
+    if (lhs.size1() == 1 && rhs.size1() > 1) {
+      return eq(repmat(lhs, rhs.size1()), rhs, opts);
+    } else if (lhs.size1() > 1 && rhs.size1() == 1) {
+      return eq(lhs, repmat(rhs, lhs.size1()), opts);
+    } else {
+      casadi_error("Mismatched dimensions: " + str(lhs.size1()) + " vs " + str(rhs.size1()));
+    }
+  }
+  // Make sure right-hand-side only depends on known model variables
+  std::vector<size_t> rhs_vars = find(symvar(rhs));
+  // If right-hand-side contains a time derivative that hasn't been defined yet,
+  // add a new algebraic variable der_x and the ODE "der(x) = der_x"
+  // This ensures that the DAE stays in semi-explicit form
+  for (size_t rhs : rhs_vars) {
+    Variable& v = variable(rhs);
+    if (v.category == Category::Z && v.parent >= 0) {
+      // Find the corresponding state variable
+      Variable& x = variable(v.parent);
+      // The "parent" attribute is used in some other cases, like assignments
+      casadi_assert(x.der == v.index, "Cannot handle right-hand-side variable: " + v.name);
+      // Create a new algebraic variable der_{name}, to distinguish from der({name})
+      Variable& der_x = add(unique_name("der_" + x.name, true),
+        Causality::LOCAL, Variability::CONTINUOUS,
+        {{"dimension", {x.dimension}}});
+      // Add the trivial ODE
+      eq(x.get_der(*this), der_x.v, Dict());
+    }
+  }
+  // Try to honor a == b as an explicit equation
+  if (lhs.is_valid_input()) {
+    // Explicit equation
+    if (lhs.is_symbolic()) {
+      // Regular symbolic: Find the variable
+      Variable& v = variable(lhs);
+      // Set the binding equation
+      if (v.has_beq()) {
+        // Treat as implicit equation via recursion
+        return eq(MX::zeros(lhs.sparsity()), lhs - rhs, opts);
+      } else {
+        // Set the binding equation
+        Variable& beq = assign(v.name, rhs);
+        v.bind = beq.index;
+      }
+      // (Re)classify variables
+      if (v.parent >= 0) {
+        // Derivative variable is being set - find the corresponding state variable
+        Variable& x = variable(v.parent);
+        // The "parent" attribute is used in some other cases, like assignments
+        casadi_assert(x.der == v.index, "Cannot handle left-hand-side: " + str(lhs));
+        // Reclassify as a differential state and derivative as a dependent variable
+        if (x.category == Category::Z) {
+          // Not previously used: Reclassify as differential state
+          categorize(x.index, detect_quad_ && !x.in_rhs ? Category::Q : Category::X);
+          categorize(v.index, Category::W);
+        } else if (x.category == Category::W) {
+          // Already given a defining equation: Create a new dependent variable and use this
+          // for the previous definition
+          Variable& def_x = add(unique_name("def_" + x.name, true),
+            Causality::LOCAL, Variability::CONTINUOUS,
+            {{"dimension", {x.dimension}}});
+          categorize(def_x.index, Category::W);
+          def_x.bind = x.bind;
+          // We can now reclassify x as a differential state
+          x.bind = -1;
+          categorize(x.index, Category::X);
+          categorize(v.index, Category::W);
+          // Add a new implicit equation: 0 == x - def_x
+          Variable& alg = add(unique_name("__alg__"), Causality::LOCAL, Variability::CONTINUOUS,
+            x.v - def_x.v, {{"dimension", x.dimension}});
+          categorize(alg.index, Category::CALCULATED);
+          residuals_.push_back(alg.index);
+        } else {
+          casadi_error("Unexpected category for " + x.name + ": " + to_string(x.category));
+        }
+      } else if (v.category == Category::Z) {
+        // Reclassify as dependent variable
+        categorize(v.index, Category::W);
+      } else {
+        casadi_error("Cannot handle left-hand-side: " + str(lhs) + " of category '"
+          + to_string(v.category) + "'");
+      }
+    } else {
+      // Concatenation: Split into primitives
+      auto lhs_split = lhs.primitives();
+      std::vector<MX> rhs_split = lhs.split_primitives(rhs);
+      // Call recursively
+      for (size_t k = 0; k < lhs_split.size(); ++k) {
+        eq(lhs_split.at(k), rhs_split.at(k), opts);
+      }
+      return;
+    }
+  } else {
+    // Implicit equation: Create residual variable
+    Variable& alg = add(unique_name("__alg__"), Causality::LOCAL, Variability::CONTINUOUS,
+      lhs - rhs, {{"dimension", std::vector<casadi_int>{lhs.size1()}}});
+    categorize(alg.index, Category::CALCULATED);
+    residuals_.push_back(alg.index);
+  }
+  // Do not allow any quadrature states in the right-hand-sides
+  for (size_t rhs : rhs_vars) {
+    Variable& v = variable(rhs);
+    if (!v.in_rhs) {
+      v.in_rhs = true;
+      if (v.category == Category::Q) categorize(v.index, Category::X);
+    }
+  }
+}
+
+void DaeBuilderInternal::when(const MX& cond, const std::vector<std::string>& eqs,
+    const Dict& opts) {
+  // Read options
+  for (auto&& op : opts) {
+    casadi_error("No such option: " + op.first);
+  }
+  // Convert condition into a smooth zero crossing condition
+  MX zero;
+  if (cond.is_op(OP_LT)) {
+    zero = cond.dep(0) - cond.dep(1);  // Reformulate a < b to a - b < 0
+  } else if (cond.is_op(OP_LE)) {
+    casadi_error("Only strict inequality in zero-crossing conditions permitted, got: "
+      + str(cond));
+  } else {
+    casadi_error("Cannot parse zero-crossing condition: " + str(cond));
+  }
+  // Create a new dependent variable for the event indicator
+  Variable& e = add(unique_name("__when__"), Causality::LOCAL, Variability::CONTINUOUS,
+    zero, Dict());
+  event_indicators_.push_back(e.index);
+  categorize(e.index, Category::CALCULATED);
+  // Convert to legacy format, pending refactoring
+  std::vector<MX> all_lhs, all_rhs;
+  std::vector<size_t> all_eqs;
+  for (auto&& eq : eqs) {
+    Variable& ee = variable(eq);
+    casadi_assert_dev(ee.category == Category::CALCULATED);
+    all_lhs.push_back(var(ee.parent));
+    all_rhs.push_back(ee.v);
+    all_eqs.push_back(ee.index);
+  }
+  when_.push_back(std::make_pair(e.index, all_eqs));
+}
+
+Variable& DaeBuilderInternal::assign(const std::string& name, const MX& val) {
+  // Create a unique name for the reinit variable
+  std::string assign_name = unique_name("__assign__" + name + "__");
+  // Add a new dependent variable defined by val
+  Variable& v = add(assign_name, Causality::LOCAL, Variability::CONTINUOUS,
+    val, Dict());
+  // Classify as assign variable
+  categorize(v.index, Category::CALCULATED);
+  v.parent = variable(name).index;
+  // Return the variable name
+  return v;
+}
+
+Variable& DaeBuilderInternal::reinit(const std::string& name, const MX& val) {
+  // Create a unique name for the reinit variable
+  std::string reinit_name = unique_name("__reinit__" + name + "__");
+  // Add a new dependent variable defined by val
+  Variable& v = add(reinit_name, Causality::LOCAL, Variability::CONTINUOUS, val, Dict());
+  // Classify as a defined variable
+  categorize(v.index, Category::CALCULATED);
+  v.parent = variable(name).index;
+  // Return the variable name
+  return v;
+}
+
+void DaeBuilderInternal::set_init(const std::string& name, const MX& init_rhs) {
   // Find the algebraic variable
-  const Variable& z = variable(name);
-  // Check if residual exists
-  if (z.alg < 0) {
-    // New derivative variable
-    Variable& alg = new_variable("alg_" + name);
-    alg.v = MX::sym(alg.name);
-    alg.causality = Causality::OUTPUT;
-    alg.beq = alg_rhs;
-    variable(name).alg = alg.index;
-  } else {
-    // Variable exists: Update binding equation
-    variable(z.alg).beq = alg_rhs;
+  Variable& v = variable(name);
+  // If variable already has an initial binding equation, remove it
+  if (!v.ieq.is_empty()) {
+    // Remove from list of initial equations
+    auto old_loc = std::find(init_.begin(), init_.end(), v.index);
+    if (old_loc == init_.end()) casadi_error("Corrupted list of initial equations");
+    init_.erase(old_loc);
+    v.ieq = MX();
   }
+  // If right-hand-side is empty, just erase
+  if (init_rhs.is_empty()) return;
+
+  // Make sure not already in list of initial equations
+  if (std::find(init_.begin(), init_.end(), v.index) != init_.end()) {
+    casadi_error("Initial equation for " + name + " has already been set");
+  }
+  // Add to list of initial equations
+  init_.push_back(v.index);
+  v.ieq = init_rhs;
 }
 
 template<typename T>
@@ -2488,11 +3281,22 @@ std::vector<T> read_list(const XmlNode& n) {
   return r;
 }
 
+void DaeBuilderInternal::import_default_experiment(const XmlNode& n) {
+  start_time_ = n.attribute<double>("startTime", nan);
+  stop_time_ = n.attribute<double>("stopTime", nan);
+  tolerance_ = n.attribute<double>("tolerance", nan);
+  step_size_ = n.attribute<double>("stepSize", nan);
+}
+
 void DaeBuilderInternal::import_model_exchange(const XmlNode& n) {
   // Read attributes
-  provides_directional_derivative_
-    = n.attribute<bool>("providesDirectionalDerivative", false);
+  provides_directional_derivatives_ = n.attribute<bool>(
+    fmi_major_ >= 3 ? "providesDirectionalDerivatives" : "providesDirectionalDerivative", false);
+  provides_adjoint_derivatives_
+    = n.attribute<bool>("providesAdjointDerivatives", false);
   model_identifier_ = n.attribute<std::string>("modelIdentifier");
+  can_be_instantiated_only_once_per_process_ =
+    n.attribute<bool>("canBeInstantiatedOnlyOncePerProcess", false);
   // Get list of source files
   if (n.has_child("SourceFiles")) {
     for (const XmlNode& sf : n["SourceFiles"].children) {
@@ -2502,13 +3306,50 @@ void DaeBuilderInternal::import_model_exchange(const XmlNode& n) {
 }
 
 void DaeBuilderInternal::import_model_variables(const XmlNode& modvars) {
-  // Add variables
+  // Mapping from derivative variables to corresponding state variables, FMUX only
+  std::vector<std::pair<std::string, std::string>> fmi1_der;
+
+  // Force any independent variable to appear first
+  std::vector<const XmlNode*> modvars_children;
+
   for (casadi_int i = 0; i < modvars.size(); ++i) {
     // Get a reference to the variable
     const XmlNode& vnode = modvars[i];
+    std::string causality_str = vnode.attribute<std::string>("causality", "local");
+    if (causality_str=="independent") {
+      modvars_children.push_back(&vnode);
+    }
+  }
+
+  for (casadi_int i = 0; i < modvars.size(); ++i) {
+    // Get a reference to the variable
+    const XmlNode& vnode = modvars[i];
+    std::string causality_str = vnode.attribute<std::string>("causality", "local");
+    if (causality_str!="independent") {
+      modvars_children.push_back(&vnode);
+    }
+  }
+
+  // Add variables
+  for (const XmlNode* & vnode_ptr : modvars_children) {
+    // Get a reference to the variable
+    const XmlNode& vnode = *vnode_ptr;
 
     // Name of variable
     std::string name = vnode.attribute<std::string>("name");
+
+    // Handle variable categories (FMUX)
+    if (fmi_major_ == 1 && vnode.has_child("VariableCategory")) {
+      std::string variable_category = vnode["VariableCategory"].text;
+      if (variable_category == "derivative") {
+        // Create a new derivative variable
+        std::string x_name = vnode["QualifiedName"][0].attribute<std::string>("name");
+        fmi1_der.push_back(std::make_pair(x_name, name));
+      }
+    }
+
+    // When conditions are reformulated into continuous zero-crossing functions
+    if (fmi_major_ == 1 && name.rfind("$whenCondition", 0) == 0) continue;
 
     // Ignore duplicate variables
     if (varind_.find(name) != varind_.end()) {
@@ -2516,144 +3357,583 @@ void DaeBuilderInternal::import_model_variables(const XmlNode& modvars) {
       continue;
     }
 
-    // Create new variable
-    Variable& var = new_variable(name);
-    var.v = MX::sym(name);
+    // Type specific properties
+    Dict opts;
+    Type type = Type::NUMEL;
+    casadi_int derivative = -1;
+    if (fmi_major_ >= 3) {
+      // FMI 3.0: Type information in the same node
+      type = to_enum<Type>(vnode.name);
+      switch (type) {
+      case Type::FLOAT32:  // fall-through
+      case Type::FLOAT64:
+        // Floating point valued variables
+        opts["unit"] = vnode.attribute<std::string>("unit", "");
+        opts["display_unit"] = vnode.attribute<std::string>("displayUnit", "");
+        opts["min"] = vnode.attribute<double>("min", -inf);
+        opts["max"] = vnode.attribute<double>("max", inf);
+        opts["nominal"] = vnode.attribute<double>("nominal", 1.);
+        opts["start"] = vnode.attribute<double>("start", 0.);
+        derivative = vnode.attribute<casadi_int>("derivative", -1);
+        break;
+      case Type::INT8:  // fall-through
+      case Type::UINT8:  // fall-through
+      case Type::INT16:  // fall-through
+      case Type::UINT16:  // fall-through
+      case Type::INT32:  // fall-through
+      case Type::UINT32:  // fall-through
+      case Type::INT64:  // fall-through
+      case Type::UINT64:  // fall-through
+        // Integer valued variables
+        opts["min"] = vnode.attribute<double>("min", -inf);
+        opts["max"] = vnode.attribute<double>("max", inf);
+        break;
+      default:
+        break;
+      }
+    } else {
+      // FMI 1.0 / 2.0: Type information in a separate node
+      if (vnode.has_child("Real")) {
+        type = Type::FLOAT64;
+        const XmlNode& props = vnode["Real"];
+        opts["unit"] = props.attribute<std::string>("unit", "");
+        opts["display_unit"] = props.attribute<std::string>("displayUnit", "");
+        opts["min"] = props.attribute<double>("min", -inf);
+        opts["max"] = props.attribute<double>("max", inf);
+        opts["nominal"] = props.attribute<double>("nominal", 1.);
+        opts["start"] = props.attribute<double>("start", 0.);
+        derivative = props.attribute<casadi_int>("derivative", -1);
+      } else if (vnode.has_child("Integer")) {
+        type = Type::INT32;
+        const XmlNode& props = vnode["Integer"];
+        opts["min"] = props.attribute<double>("min", -inf);
+        opts["max"] = props.attribute<double>("max", inf);
+      } else if (vnode.has_child("Boolean")) {
+        type = Type::BOOLEAN;
+      } else if (vnode.has_child("String")) {
+        type = Type::STRING;
+      } else if (vnode.has_child("Enumeration")) {
+        type = Type::ENUMERATION;
+      } else {
+        casadi_warning("Unknown type for " + name);
+      }
+    }
 
-    // Read common attributes, cf. FMI 2.0.2 specification, 2.2.7
-    var.value_reference = static_cast<unsigned int>(vnode.attribute<casadi_int>("valueReference"));
-    var.description = vnode.attribute<std::string>("description", "");
+    // Description
+    std::string description = vnode.attribute<std::string>("description", "");
+
+    // Causality (FMI 1.0 -> FMI 2.0+)
     std::string causality_str = vnode.attribute<std::string>("causality", "local");
-    if (causality_str == "internal") causality_str = "local";  // FMI 1.0 -> FMI 2.0
-    var.causality = to_enum<Causality>(causality_str);
-    std::string variability_str = vnode.attribute<std::string>("variability", "continuous");
-    if (variability_str == "parameter") variability_str = "fixed";  // FMI 1.0 -> FMI 2.0
-    var.variability = to_enum<Variability>(variability_str);
+    if (fmi_major_ == 1 && causality_str == "internal") causality_str = "local";
+    Causality causality = to_enum<Causality>(causality_str);
+
+    // Variability (FMI 1.0 -> FMI 2.0+)
+    std::string variability_str = vnode.attribute<std::string>("variability",
+      to_string(default_variability(causality, type)));
+    if (fmi_major_ == 1 && variability_str == "parameter") variability_str = "fixed";
+    Variability variability = to_enum<Variability>(variability_str);
+
+    // Initial property
+    Initial initial = default_initial(causality, variability);
     std::string initial_str = vnode.attribute<std::string>("initial", "");
-    if (initial_str.empty()) {
-      // Default value
-      var.initial = Variable::default_initial(var.causality, var.variability);
-    } else {
+    if (!initial_str.empty()) {
       // Consistency check
-      casadi_assert(var.causality != Causality::INPUT && var.causality != Causality::INDEPENDENT,
-        "The combination causality = '" + to_string(var.causality) + "', "
-        "initial = '" + initial_str + "' is not allowed per FMI 2.0 specification.");
-      // Value specified
-      var.initial = to_enum<Initial>(initial_str);
+      casadi_assert(causality != Causality::INPUT && causality != Causality::INDEPENDENT,
+        "The combination causality = '" + to_string(causality) + "', "
+        "initial = '" + initial_str + "' is not allowed per the FMI specification.");
+      initial = to_enum<Initial>(initial_str);
     }
-    // Other properties
-    if (vnode.has_child("Real")) {
-      const XmlNode& props = vnode["Real"];
-      var.unit = props.attribute<std::string>("unit", var.unit);
-      var.display_unit = props.attribute<std::string>("displayUnit", var.display_unit);
-      var.min = props.attribute<double>("min", -inf);
-      var.max = props.attribute<double>("max", inf);
-      var.nominal = props.attribute<double>("nominal", 1.);
-      var.set_attribute(Attribute::START, props.attribute<double>("start", 0.));
-      var.der_of = props.attribute<casadi_int>("derivative", var.der_of);
-    } else if (vnode.has_child("Integer")) {
-      const XmlNode& props = vnode["Integer"];
-      var.type = Type::INT32;
-      var.min = props.attribute<double>("min", -inf);
-      var.max = props.attribute<double>("max", inf);
-    } else if (vnode.has_child("Boolean")) {
-      var.type = Type::BOOLEAN;
-    } else if (vnode.has_child("String")) {
-      var.type = Type::STRING;
-    } else if (vnode.has_child("Enumeration")) {
-      var.type = Type::ENUMERATION;
-    } else {
-      casadi_warning("Unknown type for " + name);
+
+    // If an input has a description that starts with "PARAMETER:",
+    // treat it as a tunable parameter
+    if (causality == Causality::INPUT && description.rfind("PARAMETER:", 0) == 0) {
+      // Make tunable parameter
+      causality = Causality::PARAMETER;
+      variability = Variability::TUNABLE;
     }
-    // Initial classification of variables (states/outputs to be added later)
-    if (var.causality == Causality::INDEPENDENT) {
-      // Independent (time) variable
-      t_.push_back(var.index);
-    } else if (var.causality == Causality::INPUT) {
-      u_.push_back(var.index);
-    } else if (var.variability == Variability::TUNABLE) {
-      p_.push_back(var.index);
+
+    // Create the new variable
+    opts["type"] = to_string(type);
+    opts["initial"] = to_string(initial);
+    opts["description"] = description;
+    Variable& var = add(name, causality, variability, opts);
+    if (debug_) uout() << "Added variable: " << var.name << std::endl;
+
+    // Ignore time variable?
+    if (causality == Causality::INDEPENDENT && ignore_time_) {
+      categorize(var.index, Category::NUMEL);
+    }
+
+    // Do not permit discrete variables in x, for now
+    if (variability == Variability::DISCRETE) {
+      categorize(var.index, Category::NUMEL);
+    }
+
+    // Unless detect_quad has been set, assume all variables in the right-hand-sides
+    // Prevents changing X to Q
+    var.in_rhs = !detect_quad_ && fmi_major_ >= 2;
+    var.value_reference = static_cast<unsigned int>(vnode.attribute<casadi_int>("valueReference"));
+    vrmap_[var.value_reference] = var.index;
+    var.der_of = derivative;
+  }
+
+  // Set "parent" property using "derivative" attribute
+  for (size_t i = 0; i < n_variables(); ++i) {
+    Variable& v = variable(i);
+    if (v.der_of >= 0) {
+      if (fmi_major_ >= 3) {
+        // Value reference is given: Find corresponding variable
+        v.parent = vrmap_.at(static_cast<unsigned int>(v.der_of));
+      } else if (fmi_major_ > 1) {
+        // Variable given with index-1, make index 0
+        v.parent = v.der_of - 1;
+      }
+      // TODO(@jaeandersson): Remove this redefinition of der_of
+      v.der_of = v.parent;
     }
   }
-  // Handle derivatives
-  for (size_t i = 0; i < n_variables(); ++i) {
-    if (variable(i).der_of >= 0) {
-      // Add variable offset, make index 1
-      variable(i).der_of -= 1;
-      // Set der
-      variable(variable(i).der_of).der = i;
+
+  // Map derivative variables to corresponding state variables, FMUX only
+  for (auto& p : fmi1_der) {
+    // Add to list of derivatives
+    Variable& v = variable(p.first);
+    Variable& der_v = variable(p.second);
+    categorize(der_v.index, Category::Z);
+    der_v.der_of = der_v.parent = v.index;
+    v.der = der_v.index;
+    derivatives_.push_back(der_v.index);
+  }
+}
+
+std::vector<casadi_int> DaeBuilderInternal::read_dependencies(const XmlNode& n) {
+  // Default behaviour should be no known structure
+  casadi_assert(n.has_attribute("dependencies"),
+    "Default 'dependencies' not implemented");
+  // Read list of dependencies
+  std::vector<casadi_int> r = n.attribute<std::vector<casadi_int>>("dependencies", {});
+  // Get corresponding variable index
+  for (casadi_int& e : r) {
+    if (fmi_major_ >= 3) {
+      // Value reference is given
+      e = vrmap_.at(static_cast<unsigned int>(e));
+    } else {
+      // Index-1 is given
+      e--;
     }
+  }
+  // Return list of dependencies
+  return r;
+}
+
+std::vector<DependenciesKind> DaeBuilderInternal::read_dependencies_kind(
+    const XmlNode& n, size_t ndep) {
+  // Quick return if node not provided
+  if (!n.has_attribute("dependenciesKind")) {
+    // No structure known, assume general dependency
+    return std::vector<DependenciesKind>(ndep, DependenciesKind::DEPENDENT);
+  } else {
+    // Read list of strings
+    auto dk_str = n.attribute<std::vector<std::string>>("dependenciesKind");
+    // Make sure expected length
+    casadi_assert(dk_str.size() == ndep, "Mismatching 'dependenciesKind'");
+    // Convert to enums
+    std::vector<DependenciesKind> r(ndep);
+    for (size_t i = 0; i < ndep; ++i) {
+      r[i] = to_enum<DependenciesKind>(dk_str[i]);
+    }
+    return r;
   }
 }
 
 void DaeBuilderInternal::import_model_structure(const XmlNode& n) {
-  // Outputs
-  if (n.has_child("Outputs")) {
-    for (auto& e : n["Outputs"].children) {
-      // Get index
-      outputs_.push_back(e.attribute<casadi_int>("index", 0) - 1);
-      // Corresponding variable
-      Variable& v = variable(outputs_.back());
-      // Add to y, unless state
-      if (v.der < 0) {
-        y_.push_back(v.index);
-        v.beq = v.v;
+  // Do not use the automatic selection of outputs based on output causality
+  outputs_.clear();
+
+  // Algebraic variables are handled internally in the FMU
+  for (size_t i = 0; i < n_variables(); ++i) {
+    Variable& v = variable(i);
+    if (v.category == Category::Z) {
+      // Mark as dependent variable, no need for an algebraic equation anymore
+      categorize(v.index, Category::W);
+    }
+  }
+
+  // Read structure
+  if (fmi_major_ >= 3) {
+    // Loop over ModelStructure elements
+    for (casadi_int i = 0; i < n.size(); ++i) {
+      const XmlNode& e = n[i];
+      // Get a reference to the variable
+      if (e.name == "Output") {
+        // Get index
+        outputs_.push_back(vrmap_.at(e.attribute<size_t>("valueReference")));
+        // Corresponding variable
+        Variable& v = variable(outputs_.back());
+        // Get dependencies
+        v.dependencies = read_dependencies(e);
+        v.dependenciesKind = read_dependencies_kind(e, v.dependencies.size());
+        // Mark interdependencies
+        for (casadi_int d : v.dependencies) variable(d).dependency = true;
+        for (casadi_int d : v.dependencies) variable(d).in_rhs = true;
+      } else if (e.name == "ContinuousStateDerivative") {
+        // Get index
+        derivatives_.push_back(vrmap_.at(e.attribute<size_t>("valueReference")));
+        // Corresponding variable
+        Variable& v = variable(derivatives_.back());
+        // Add to list of states and derivative to list of dependent variables
+        casadi_assert(v.parent >= 0, "Error processing derivative info for " + v.name);
+        categorize(v.index, Category::W);
+        categorize(v.parent, Category::X);
+        // Map der field to derivative variable
+        variable(v.parent).der = derivatives_.back();
+        // Get dependencies
+        v.dependencies = read_dependencies(e);
+        v.dependenciesKind = read_dependencies_kind(e, v.dependencies.size());
+        // Mark interdependencies
+        for (casadi_int d : v.dependencies) variable(d).dependency = true;
+        for (casadi_int d : v.dependencies) variable(d).in_rhs = true;
+      } else if (e.name == "ClockedState") {
+        // Clocked state
+        casadi_message("ClockedState not implemented, ignoring");
+      } else if (e.name == "InitialUnknown") {
+        // Get index
+        initial_unknowns_.push_back(vrmap_.at(e.attribute<size_t>("valueReference")));
+        // Get dependencies
+        for (casadi_int d : read_dependencies(e)) variable(d).dependency = true;
+      } else if (e.name == "EventIndicator") {
+        // Event indicator
+        event_indicators_.push_back(vrmap_.at(e.attribute<size_t>("valueReference")));
+        number_of_event_indicators_++;
+      } else {
+        // Unknown
+        casadi_error("Unknown ModelStructure element: " + e.name);
       }
-      // Get dependencies
-      v.dependencies = e.attribute<std::vector<casadi_int>>("dependencies", {});
-      // dependenciesKind attribute, if present
-      if (e.has_attribute("dependenciesKind")) {
-        // Load list of strings
-        auto dK = e.attribute<std::vector<std::string>>("dependenciesKind", {});
-        // Convert to enum, add to list
-        v.dependenciesKind.reserve(v.dependencies.size());
-        for (auto&& s : dK) {
-          v.dependenciesKind.push_back(to_enum<DependenciesKind>(s));
+    }
+  } else {
+    // Derivatives
+    if (n.has_child("Derivatives")) {
+      for (auto& e : n["Derivatives"].children) {
+        // Get index
+        derivatives_.push_back(e.attribute<casadi_int>("index", 0) - 1);
+        // Corresponding variable
+        Variable& v = variable(derivatives_.back());
+        // Add to list of states and derivative to list of dependent variables
+        casadi_assert(v.parent >= 0, "Error processing derivative info for " + v.name);
+        categorize(v.index, Category::W);
+        categorize(v.parent, Category::X);
+        // Map der field to derivative variable
+        variable(v.parent).der = derivatives_.back();
+      }
+    }
+
+    // What if dependencies attributed is missing from Outputs,Derivatives?
+    // Depends on x_ having been populated
+    std::vector<casadi_int> default_dependencies;
+    default_dependencies.insert(default_dependencies.begin(),
+      indices(Category::T).begin(), indices(Category::T).end());
+    default_dependencies.insert(default_dependencies.begin(),
+      indices(Category::X).begin(), indices(Category::X).end());
+    default_dependencies.insert(default_dependencies.begin(),
+      indices(Category::U).begin(), indices(Category::U).end());
+    std::sort(default_dependencies.begin(), default_dependencies.end());
+
+    // FMI2 standard does not allow parameters to be included in dependencies attribute
+    //  (Table in section 2.2.8)
+    // FMI3 standard does (Table in section 2.4.8)
+    //
+    // A uniform treatment is unconditionally add dense dependencies to all parameters
+    // when loading FMI2
+
+    std::vector<casadi_int> additional_dependencies;
+    additional_dependencies.insert(additional_dependencies.begin(),
+      indices(Category::P).begin(), indices(Category::P).end());
+    std::vector<DependenciesKind> additional_dependencies_kind(size(Category::P),
+                                                               DependenciesKind::DEPENDENT);
+
+    // Derivatives
+    if (n.has_child("Derivatives")) {
+      // Separate pass for dependencies
+      for (auto& e : n["Derivatives"].children) {
+        casadi_int index = e.attribute<casadi_int>("index", 0)-1;
+
+        // Corresponding variable
+        Variable& v = variable(index);
+
+        // Get dependencies
+        if (e.has_attribute("dependencies")) {
+          v.dependencies = read_dependencies(e);
+        } else {
+          v.dependencies = default_dependencies;
         }
+        v.dependenciesKind = read_dependencies_kind(e, v.dependencies.size());
+
+        v.dependencies.insert(v.dependencies.end(),
+          additional_dependencies.begin(), additional_dependencies.end());
+        v.dependenciesKind.insert(v.dependenciesKind.end(),
+          additional_dependencies_kind.begin(), additional_dependencies_kind.end());
+
+        // Mark interdependencies
+        for (casadi_int d : v.dependencies) variable(d).dependency = true;
+        for (casadi_int d : v.dependencies) variable(d).in_rhs = true;
       }
-      // Mark interdependencies, change to index-0
-      for (casadi_int& d : v.dependencies) {
-        variable(--d).dependency = true;
+    }
+    // Outputs
+    if (n.has_child("Outputs")) {
+      for (auto& e : n["Outputs"].children) {
+        // Get index
+        outputs_.push_back(e.attribute<casadi_int>("index", 0) - 1);
+        // Corresponding variable
+        Variable& v = variable(outputs_.back());
+        // Get dependencies
+        if (e.has_attribute("dependencies")) {
+          v.dependencies = read_dependencies(e);
+        } else {
+          v.dependencies = default_dependencies;
+        }
+        v.dependenciesKind = read_dependencies_kind(e, v.dependencies.size());
+
+        v.dependencies.insert(v.dependencies.end(),
+          additional_dependencies.begin(), additional_dependencies.end());
+        v.dependenciesKind.insert(v.dependenciesKind.end(),
+          additional_dependencies_kind.begin(), additional_dependencies_kind.end());
+
+        // Mark interdependencies
+        for (casadi_int d : v.dependencies) variable(d).dependency = true;
+        for (casadi_int d : v.dependencies) variable(d).in_rhs = true;
+      }
+    }
+    // What if dependencies is missing from InitialUnknowns?
+    // Depends on x_ having been populated
+    default_dependencies.clear();
+    default_dependencies.insert(default_dependencies.begin(),
+      indices(Category::T).begin(), indices(Category::T).end());
+    for (const Variable* v : variables_) {
+      if (v->initial == Initial::EXACT) default_dependencies.push_back(v->index);
+    }
+    default_dependencies.insert(default_dependencies.begin(),
+      indices(Category::U).begin(), indices(Category::U).end());
+    std::sort(default_dependencies.begin(), default_dependencies.end());
+
+    // Initial unknowns
+    if (n.has_child("InitialUnknowns")) {
+      for (auto& e : n["InitialUnknowns"].children) {
+        // Get index
+        initial_unknowns_.push_back(e.attribute<casadi_int>("index", 0) - 1);
+
+        std::vector<casadi_int> dependencies;
+        // Get dependencies
+        if (e.has_attribute("dependencies")) {
+          dependencies = read_dependencies(e);
+        } else {
+          dependencies = default_dependencies;
+        }
+
+        dependencies.insert(dependencies.end(),
+          additional_dependencies.begin(), additional_dependencies.end());
+
+        // Get dependencies
+        for (casadi_int d : dependencies) variable(d).dependency = true;
       }
     }
   }
-  // Derivatives
-  if (n.has_child("Derivatives")) {
-    for (auto& e : n["Derivatives"].children) {
-      // Get index
-      derivatives_.push_back(e.attribute<casadi_int>("index", 0) - 1);
-      // Corresponding variable
-      Variable& v = variable(derivatives_.back());
-      // Add to list of states
-      casadi_assert(v.der_of >= 0, "Error processing derivative info for " + v.name);
-      x_.push_back(v.der_of);
-      // Get dependencies
-      v.dependencies = e.attribute<std::vector<casadi_int>>("dependencies", {});
-      // dependenciesKind attribute, if present
-      if (e.has_attribute("dependenciesKind")) {
-        // Load list of strings
-        auto dK = e.attribute<std::vector<std::string>>("dependenciesKind", {});
-        // Convert to enum, add to list
-        v.dependenciesKind.reserve(v.dependencies.size());
-        for (auto&& s : dK) {
-          v.dependenciesKind.push_back(to_enum<DependenciesKind>(s));
-        }
-      }
-      // Mark interdependencies, change to index-0
-      for (casadi_int& d : v.dependencies) {
-        variable(--d).dependency = true;
-      }
+
+  // Reclassify some states as quadratures
+  if (detect_quad_ && fmi_major_ >= 2) {
+    for (size_t i : derivatives_) {
+      size_t x = variable(i).parent;
+      if (!variable(x).in_rhs) categorize(x, Category::Q);
     }
   }
-  // Initial unknowns
-  if (n.has_child("InitialUnknowns")) {
-    for (auto& e : n["InitialUnknowns"].children) {
-      // Get index
-      initial_unknowns_.push_back(e.attribute<casadi_int>("index", 0) - 1);
-      // Get dependencies
-      for (casadi_int d : e.attribute<std::vector<casadi_int>>("dependencies", {})) {
-        variable(d - 1).dependency = true;
+}
+
+void DaeBuilderInternal::import_binding_equations(const XmlNode& eqs) {
+  if (debug_) {
+    uout() << "== Structure before importing binding equations ==" << std::endl;
+    disp(uout(), true);
+  }
+
+  // Loop over binding equations
+  for (casadi_int i = 0; i < eqs.size(); ++i) {
+    const XmlNode& eq = eqs[i];
+    std::string eq_name = "beq_" + str(i);
+    // Try to read the node
+    try {
+      // Get the variable and binding expression
+      Variable& var = read_variable(eq[0]);
+      if (eq[1].size() == 1) {
+        // Set the binding equation
+        var.bind = assign(var.name, read_expr(eq[1][0])).index;
+      } else {
+        // OpenModelica 1.17 occationally generates integer values without type specifier (bug?)
+        casadi_assert(eq[1].size() == 0, "Not implemented");
+        casadi_int val;
+        eq[1].get(&val);
+        casadi_warning(var.name + " has binding equation without type specifier: " + str(val));
+        // Set the binding equation
+        var.bind = assign(var.name, val).index;
       }
+      // Add to list of dependent parameters
+      indices(Category::D).push_back(var.index);
+    } catch (std::exception& e) {
+      casadi_error("Failed to read " + eq_name + ":" + str(e.what()));
+    }
+  }
+}
+
+void DaeBuilderInternal::import_dynamic_equations(const XmlNode& eqs) {
+  if (debug_) {
+    uout() << "== Structure before importing dynamic equations ==" << std::endl;
+    disp(uout(), true);
+  }
+  // Add discrete states to x_
+  // Note: Make generic, should also apply to regular FMUs
+  for (Variable* v : variables_) {
+    if (v->variability == Variability::DISCRETE) {
+      categorize(v->index, Category::X);
+    }
+  }
+  // Add equations
+  for (casadi_int i = 0; i < eqs.size(); ++i) {
+    const XmlNode& eq = eqs[i];
+    std::string eq_name = "dyneq_" + str(i);
+    // Try to read the node
+    try {
+      if (eq.name == "equ:When") {  // When equation
+        // Nodes for condition, equations
+        const XmlNode& n_cond = eq["equ:Condition"];
+        const XmlNode& n_equ = eq["equ:Equation"];
+        // Consistency checks - only working for very simple expressions
+        casadi_assert(n_cond.size() == 1, "Only one condition in when equation supported");
+        casadi_assert(n_equ.size() == 1, "Only one equation in when equation supported");
+        // Get expression for condition
+        std::string cond_name = n_cond[0][0].attribute<std::string>("name");
+        std::string when_prefix = "$whenCondition";
+        cond_name = cond_name.substr(when_prefix.size());
+        casadi_int ind = std::stoi(cond_name) - 1;
+        // Left-hand-side and right-hand-side
+        MX lhs, rhs;
+        // Handle different types of equations
+        if (n_equ[0].name == "exp:Sub") {
+          // Assume equation is an assignment
+          lhs = read_identifier(n_equ[0][0]);
+          rhs = read_expr(n_equ[0][1]);
+          when_.at(ind).second.push_back(assign(lhs.name(), rhs).index);
+        } else if (n_equ[0].name == "exp:Reinit") {
+          // Reinitialization
+          lhs = read_identifier(n_equ[0][0]);
+          rhs = read_expr(n_equ[0][1]);
+          when_.at(ind).second.push_back(reinit(lhs.name(), rhs).index);
+        } else {
+          // Not implemented
+          casadi_error(n_equ[0].name + " in when equation not supported");
+        }
+      } else if (eq.name == "equ:Equation") {  // Residual equation
+        // Consistency checks
+        casadi_assert_dev(eq.size() == 1 && eq[0].name == "exp:Sub");
+        // Skip if empty
+        if (eq[0].size() == 0) {
+          casadi_warning(eq_name + " is empty, ignored.");
+          continue;
+        }
+        // Get the left-hand-sides and right-hand-sides
+        const XmlNode& lhs = eq[0][0];
+        const XmlNode& rhs = eq[0][1];
+        // Right-hand-side is the binding equation
+        MX beq = read_expr(rhs);
+        // Left-hand-side is a variable or derivative
+        std::string when_prefix = "$whenCondition";
+        if (lhs.name == "exp:Der") {
+          // Differential equation
+          Variable& v = read_variable(lhs[0]);
+          this->eq(der(v.v), beq, Dict());
+        } else if (lhs.size() > 0
+            && lhs[0].attribute<std::string>("name").rfind(when_prefix, 0) == 0) {
+          // Get the index
+          std::string cond_name = lhs[0].attribute<std::string>("name");
+          if (debug_) {
+            uout() << "Reading event indicator: " << cond_name << " := " << beq << std::endl;
+          }
+          cond_name = cond_name.substr(when_prefix.size());
+          casadi_int ind = std::stoi(cond_name) - 1;
+          // Ensure consequitive for now
+          casadi_assert(ind == when_.size(), "Non-consequitive when conditions");
+          // Create a when equation with no equations
+          when(beq, {}, Dict());
+        } else {
+          // Regular equation
+          Variable& v = read_variable(lhs);
+          if (debug_) uout() << "Reading equation: " << v.name << " == " << beq << std::endl;
+          this->eq(v.v, beq, Dict());
+        }
+      } else {
+        casadi_error("Unknown dynamic equation type, got:" + eq.name);
+      }
+    } catch (std::exception& e) {
+      casadi_error("Failed to read " + eq_name + ":" + str(e.what()));
+    }
+  }
+}
+
+void DaeBuilderInternal::import_initial_equations(const XmlNode& eqs) {
+  if (debug_) {
+    uout() << "== Structure before importing initial equations ==" << std::endl;
+    disp(uout(), true);
+  }
+
+  // Hack: OpenModelica XML may contain duplicate expressions, ignore these
+  std::set<std::string> already_added;
+  // Add equations
+  for (casadi_int i = 0; i < eqs.size(); ++i) {
+    const XmlNode& eq = eqs[i];
+    // Try to read the node
+    std::string eq_name = "initeq_" + str(i);
+    try {
+      if (eq.name == "equ:Equation") {  // Residual equation
+        // Consistency checks
+        casadi_assert_dev(eq.size() == 1 && eq[0].name == "exp:Sub");
+        // Ensure not empty
+        if (eq[0].size() == 0) {
+          casadi_warning(eq_name + " is empty, ignored.");
+          continue;
+        }
+        // Get the left-hand-sides and right-hand-sides
+        const XmlNode& lhs = eq[0][0];
+        const XmlNode& rhs = eq[0][1];
+
+        // Ignore initalizations of when equation indicators
+        if (lhs.size() > 0
+            && lhs[0].attribute<std::string>("name").rfind("$whenCondition", 0) == 0) {
+          continue;
+        }
+
+        // Hack: Ignore expressions that just set a $PRE variable
+        if (lhs.size() > 0 && lhs[0].attribute<std::string>("name") == "$PRE") {
+          casadi_warning(eq_name + " defines a pre-variable, ignored");
+          continue;
+        }
+        // Right-hand-side is the binding equation
+        MX beq = read_expr(rhs);
+        // Left-hand-side is a variable
+        Variable& v = read_variable(lhs);
+        // Hack: ignore initial equations for tunable parameters
+        if (v.variability == Variability::TUNABLE) {
+          casadi_warning(eq_name + " defines a tunable parameter, ignored")
+          continue;
+        }
+        // Hack: avoid duplicate equations
+        std::string eq_str = str(v.v) + " == " + str(beq);
+        auto it = already_added.insert(eq_str);
+        if (!it.second) {
+          casadi_warning(eq_name + " duplicate of previous equation " + eq_str + ", ignored")
+          continue;
+        }
+        // Set initial condition
+        set_init(v.name, beq);
+      } else {
+        casadi_error("Unknown initial equation type, got:" + eq.name);
+      }
+    } catch (std::exception& e) {
+      casadi_error("Failed to read " + eq_name + ":" + str(e.what()));
     }
   }
 }
@@ -2675,9 +3955,37 @@ size_t DaeBuilderInternal::find(const std::string& name) const {
   return it->second;
 }
 
+size_t DaeBuilderInternal::find(const MX& v) const {
+  // Make sure it is a valid input
+  casadi_assert(v.is_symbolic(), "Variable must be symbolic");
+  // Find the prospective variable
+  size_t ind = find(v.name());
+  // Make sure that the expression (not just the name) is correct
+  casadi_assert(is_equal(v, variables_.at(ind)->v),
+    "Variable \"" + v.name() + "\" has mismatching symbolic expression");
+  // Return index
+  return ind;
+}
+
 std::vector<size_t> DaeBuilderInternal::find(const std::vector<std::string>& name) const {
   std::vector<size_t> r(name.size());
   for (size_t i = 0; i < r.size(); ++i) r[i] = find(name[i]);
+  return r;
+}
+
+std::vector<size_t> DaeBuilderInternal::find(const std::vector<MX>& v) const {
+  std::vector<size_t> r(v.size());
+  for (size_t i = 0; i < r.size(); ++i) r[i] = find(v[i]);
+  return r;
+}
+
+const std::string& DaeBuilderInternal::name(size_t ind) const {
+  return variable(ind).name;
+}
+
+std::vector<std::string> DaeBuilderInternal::name(const std::vector<size_t>& ind) const {
+  std::vector<std::string> r(ind.size());
+  for (size_t i = 0; i < r.size(); ++i) r[i] = name(ind[i]);
   return r;
 }
 
@@ -2693,20 +4001,20 @@ Function DaeBuilderInternal::add_fun(const std::string& name,
   casadi_assert(!has_fun(name), "Function '" + name + "' already exists");
 
   // Dependent variable definitions
-  std::vector<MX> wdef = this->wdef();
+  std::vector<MX> wdef = output(OutputCategory::WDEF);
   // Get inputs
   std::vector<MX> arg_ex, res_ex;
   for (auto&& s : arg) arg_ex.push_back(var(s));
   for (auto&& s : res) {
     // Find the binding expression FIXME(@jaeandersson)
     casadi_int v_ind;
-    for (v_ind = 0; v_ind < w_.size(); ++v_ind) {
-      if (s == variable(w_.at(v_ind)).name) {
+    for (v_ind = 0; v_ind < size(Category::W); ++v_ind) {
+      if (s == variable(indices(Category::W).at(v_ind)).name) {
         res_ex.push_back(wdef.at(v_ind));
         break;
       }
     }
-    casadi_assert(v_ind < w_.size(), "Cannot find dependent '" + s + "'");
+    casadi_assert(v_ind < size(Category::W), "Cannot find dependent '" + s + "'");
   }
   Function ret(name, arg_ex, res_ex, arg, res, opts);
   return add_fun(ret);
@@ -2735,14 +4043,22 @@ void DaeBuilderInternal::reset() {
 }
 
 double DaeBuilderInternal::attribute(Attribute a, const std::string& name) const {
-  return variable(name).attribute(a);
+  double ret;
+  variable(name).get_attribute(a, &ret);
+  return ret;
 }
 
 std::vector<double> DaeBuilderInternal::attribute(Attribute a,
     const std::vector<std::string>& name) const {
+  // Allocate return
   std::vector<double> r;
-  r.reserve(name.size());
-  for (auto& n : name) r.push_back(variable(n).attribute(a));
+  r.reserve(size(a, name));
+  // Get contribution from each variable
+  std::vector<double> r1;
+  for (auto& n : name) {
+    variable(n).get_attribute(a, &r1);
+    r.insert(r.end(), r1.begin(), r1.end());
+  }
   return r;
 }
 
@@ -2752,32 +4068,61 @@ void DaeBuilderInternal::set_attribute(Attribute a, const std::string& name, dou
 
 void DaeBuilderInternal::set_attribute(Attribute a, const std::vector<std::string>& name,
     const std::vector<double>& val) {
-  casadi_assert(name.size() == val.size(), "Dimension mismatch");
-  for (size_t k = 0; k < name.size(); ++k) variable(name[k]).set_attribute(a, val[k]);
+  if (name.size() == val.size()) {
+    // One scalar value per variable
+    for (size_t k = 0; k < name.size(); ++k) variable(name[k]).set_attribute(a, val[k]);
+  } else if (val.size() == size(a, name)) {
+    // One vector slice per variable
+    auto val_it = val.begin();
+    for (size_t k = 0; k < name.size(); ++k) {
+      Variable& v = variable(name[k]);
+      auto val_next = val_it + v.size(a);
+      v.set_attribute(a, std::vector<double>(val_it, val_next));
+      val_it = val_next;
+    }
+  } else {
+    casadi_error("Cannot set attribute " + to_string(a) + ": Argument is of length " +
+      str(val.size()) + ", expected number of elements (" + str(size(a, name))
+      + ") or number of variables (" + str(name.size()) + ")");
+  }
 }
 
 std::string DaeBuilderInternal::string_attribute(Attribute a,
     const std::string& name) const {
-  return variable(name).string_attribute(a);
+  std::string r;
+  variable(name).get_attribute(a, &r);
+  return r;
 }
 
 std::vector<std::string> DaeBuilderInternal::string_attribute(Attribute a,
     const std::vector<std::string>& name) const {
+  // Allocate return
   std::vector<std::string> r;
-  r.reserve(name.size());
-  for (auto& n : name) r.push_back(variable(n).string_attribute(a));
+  r.reserve(size(a, name));
+  // Get contribution from each variable
+  std::string r1;
+  for (auto& n : name) {
+    variable(n).get_attribute(a, &r1);
+    r.push_back(r1);
+  }
   return r;
 }
 
 void DaeBuilderInternal::set_string_attribute(Attribute a, const std::string& name,
     const std::string& val) {
-  variable(name).set_string_attribute(a, val);
+  variable(name).set_attribute(a, val);
 }
 
 void DaeBuilderInternal::set_string_attribute(Attribute a,
     const std::vector<std::string>& name, const std::vector<std::string>& val) {
   casadi_assert(name.size() == val.size(), "Dimension mismatch");
-  for (size_t k = 0; k < name.size(); ++k) variable(name[k]).set_string_attribute(a, val[k]);
+  for (size_t k = 0; k < name.size(); ++k) variable(name[k]).set_attribute(a, val[k]);
+}
+
+casadi_int DaeBuilderInternal::size(Attribute a, const std::vector<std::string>& name) const {
+  casadi_int r = 0;
+  for (auto& n : name) r += variable(n).size(a);
+  return r;
 }
 
 Sparsity DaeBuilderInternal::jac_sparsity(const std::vector<size_t>& oind,
@@ -2868,7 +4213,7 @@ std::string DaeBuilderInternal::generate_guid() {
   // Initialize random seed
   static bool initialized = false;
   if (!initialized) {
-      srand(time(nullptr));  // NOLINT(runtime/threadsafe_fn)
+      srand(::time(nullptr));  // NOLINT(runtime/threadsafe_fn)
     initialized = true;
   }
   // Possible characters

@@ -32,6 +32,18 @@ import itertools
 import time
 from contextlib import contextmanager
 from casadi.tools import capture_stdout
+import os
+
+codegen_check_digits = 15
+
+print("os" in os.environ)
+if "os" in os.environ:
+    print(os.environ["os"])
+    if os.environ["os"]=="osx_arm":
+        # Numerical differences due to different compilers in ci
+        codegen_check_digits = 10
+
+print("codegen_check_digits", codegen_check_digits)
 
 import argparse
 import struct
@@ -556,7 +568,7 @@ class casadiTestCase(unittest.TestCase):
           fseeds = [sym("f",spmod(f.sparsity_in(i))) for i in range(f.n_in())]
           aseeds = [sym("a",spmod2(f.sparsity_out(i)))  for i in range(f.n_out())]
           inputss = [sym("i",f.sparsity_in(i)) for i in range(f.n_in())]
-          res = f.call(inputss,True)
+          res = f.call(inputss,not f.is_a("SXFunction"))
           #print res, "sp", [i.sparsity().dim(True) for i in fseeds]
           opts = {"helper_options": {"is_diff_in": f.is_diff_in(), "is_diff_out": f.is_diff_out()}}
           [fwdsens] = forward(res, inputss, [fseeds],opts)
@@ -621,8 +633,73 @@ class casadiTestCase(unittest.TestCase):
   def check_sparsity(self, a,b):
     self.assertTrue(a==b, msg=str(a) + " <-> " + str(b))
 
-  def check_codegen(self,F,inputs=None, opts=None,std="c89",extralibs="",check_serialize=False,extra_options=None,main=False,definitions=None,with_jac_sparsity=False,external_opts=None,with_reverse=False,with_forward=False,extra_include=[]):
+  def compile_external(self,name,source,opts=None,std="c89",extralibs="",check_serialize=False,extra_options=None,main=False,definitions=None,extra_include=[],debug_mode=False):
+    import subprocess
+    if args.run_slow:
+      libdir = GlobalOptions.getCasadiPath()
+      includedir = GlobalOptions.getCasadiIncludePath()
+      includedirs = [includedir,os.path.join(includedir,"highs")]
+      for e in extra_include:
+        includedirs.append(os.path.join(includedir,e))
 
+      if isinstance(extralibs,list):
+        extralibs_clean = []
+        for lib in extralibs:
+            if os.name=='nt':
+                if "." in lib:
+                    if lib.endswith(".dll"):
+                        extralibs_clean.append(lib[:-4]+".lib")
+                    else:
+                        extralibs_clean.append(lib)
+                else:
+                    extralibs_clean.append(lib+".lib")
+            else:
+                if "." in lib:
+                    extralibs_clean.append(lib)
+                else:
+                    extralibs_clean.append("-l"+lib)
+        extralibs = " " + " ".join(extralibs_clean)
+
+      if isinstance(extra_options,bool) or extra_options is None:
+        extra_options = ""
+      if isinstance(extra_options,list):
+        extra_options = " " + " ".join(extra_options)
+      if definitions is None:
+        definitions = []
+
+      def get_commands(shared=True):
+        if os.name=='nt':
+          defs = " ".join(["/D"+d for d in definitions])
+          commands = "cl.exe {shared} {definitions} /D_UCRT_NOISY_NAN {includedir} {source} {extra} /link  /libpath:{libdir} /out:{name}.dll /implib:{name}.lib".format(shared="/LD" if shared else "",std=std,source=source,libdir=libdir,includedir=" ".join(["/I" + e for e in includedirs]),extra=extralibs + extra_options + extralibs + extra_options,definitions=defs,name=name)
+          if shared:
+            output = "./" + name + ".dll"
+          else:
+            output = name + ".exe"
+          return [commands, output]
+        else:
+          defs = " ".join(["-D"+d for d in definitions])
+          output = "./" + name + (".so" if shared else "")
+          flags = "-O3"
+          if debug_mode:
+            flags = "-O0 -g"
+          commands = "gcc -pedantic -std={std} -fPIC {shared} -Wall -Werror -Wextra {includedir} -Wno-dangling-pointer -Wno-unknown-warning-option -Wno-unknown-pragmas -Wno-long-long -Wno-unused-parameter {flags} {definitions} {source} -o {name_out} -L{libdir} -Wl,-rpath,{libdir} -Wl,-rpath,.".format(shared="-shared" if shared else "",std=std,source=source,name_out=name+(".so" if shared else ""),flags=flags,libdir=libdir,includedir=" ".join(["-I" + e for e in includedirs]),definitions=defs) + (" -lm" if not shared else "") + extralibs + extra_options
+          if sys.platform=="darwin":
+            commands+= " -Xlinker -rpath -Xlinker {libdir}".format(libdir=libdir)
+            commands+= " -Xlinker -rpath -Xlinker .".format(libdir=libdir)
+          return [commands, output]
+
+      [commands, libname] = get_commands(shared=True)
+
+      print("compile library",commands)
+      p = subprocess.Popen(commands,shell=True).wait()
+      if sys.platform=="darwin":
+        subprocess.run(["otool","-l",libname])
+      if opts is None: opts = {}
+      return (external(name, libname,opts),libname)
+
+  def check_codegen(self,F,inputs=None, opts=None,std="c89",extralibs="",check_serialize=False,extra_options=None,main=False,main_return_code=0,definitions=None,with_jac_sparsity=False,external_opts=None,with_reverse=False,with_forward=False,extra_include=[],digits=15,debug_mode=False):
+    if not isinstance(main_return_code,list):
+        main_return_code = [main_return_code]
     if args.run_slow:
       import hashlib
       name = "codegen_%s" % (hashlib.md5(("%f" % np.random.random()+str(F)+str(time.time())).encode()).hexdigest())
@@ -671,7 +748,7 @@ class casadiTestCase(unittest.TestCase):
       def get_commands(shared=True):
         if os.name=='nt':
           defs = " ".join(["/D"+d for d in definitions])
-          commands = "cl.exe {shared} {definitions} {includedir} {name}.c {extra} /link  /libpath:{libdir}".format(shared="/LD" if shared else "",std=std,name=name,libdir=libdir,includedir=" ".join(["/I" + e for e in includedirs]),extra=extralibs + extra_options + extralibs + extra_options,definitions=defs)
+          commands = "cl.exe {shared} {definitions} /D_UCRT_NOISY_NAN {includedir} {name}.c {extra} /link  /libpath:{libdir}".format(shared="/LD" if shared else "",std=std,name=name,libdir=libdir,includedir=" ".join(["/I" + e for e in includedirs]),extra=extralibs + extra_options + extralibs + extra_options,definitions=defs)
           if shared:
             output = "./" + name + ".dll"
           else:
@@ -680,7 +757,10 @@ class casadiTestCase(unittest.TestCase):
         else:
           defs = " ".join(["-D"+d for d in definitions])
           output = "./" + name + (".so" if shared else "")
-          commands = "gcc -pedantic -std={std} -fPIC {shared} -Wall -Werror -Wextra {includedir} -Wno-unknown-pragmas -Wno-long-long -Wno-unused-parameter -O3 {definitions} {name}.c -o {name_out} -L{libdir} -Wl,-rpath,{libdir} -Wl,-rpath,.".format(shared="-shared" if shared else "",std=std,name=name,name_out=name+(".so" if shared else ""),libdir=libdir,includedir=" ".join(["-I" + e for e in includedirs]),definitions=defs) + (" -lm" if not shared else "") + extralibs + extra_options
+          flags = "-O3"
+          if debug_mode:
+            flags = "-O0 -g"
+          commands = "gcc -pedantic -std={std} -fPIC {shared} -Wall -Werror -Wextra {includedir} -Wno-dangling-pointer -Wno-unknown-warning-option -Wno-unknown-pragmas -Wno-long-long -Wno-unused-parameter {flags} {definitions} {name}.c -o {name_out} -L{libdir} -Wl,-rpath,{libdir} -Wl,-rpath,.".format(shared="-shared" if shared else "",std=std,name=name,name_out=name+(".so" if shared else ""),libdir=libdir,includedir=" ".join(["-I" + e for e in includedirs]),definitions=defs,flags=flags) + (" -lm" if not shared else "") + extralibs + extra_options
           if sys.platform=="darwin":
             commands+= " -Xlinker -rpath -Xlinker {libdir}".format(libdir=libdir)
             commands+= " -Xlinker -rpath -Xlinker .".format(libdir=libdir)
@@ -690,8 +770,8 @@ class casadiTestCase(unittest.TestCase):
 
       print("compile library",commands)
       p = subprocess.Popen(commands,shell=True).wait()
-      if sys.platform=="darwin":
-        subprocess.run(["otool","-l",libname])
+      #if sys.platform=="darwin":
+      #  subprocess.run(["otool","-l",libname])
       if external_opts is None: external_opts = {}
       F2 = external(F.name(), libname,external_opts)
 
@@ -709,9 +789,6 @@ class casadiTestCase(unittest.TestCase):
           inputs_main = F.convert_in(inputs)
         F.generate_in(F.name()+"_in.txt", inputs_main)
 
-      Fout = F.call(inputs)
-      Fout2 = F2.call(inputs)
-
       if main:
         with open(F.name()+"_out.txt","w") as stdout:
           with open(F.name()+"_in.txt","r") as stdin:
@@ -719,24 +796,34 @@ class casadiTestCase(unittest.TestCase):
             print(commands+" < " + F.name()+"_in.txt")
             p = subprocess.Popen(commands,shell=True,stdin=stdin,stdout=stdout)
             out = p.communicate()
-        assert p.returncode==0
+        print("Return code",p.returncode)
+        assert p.returncode in main_return_code
+        if p.returncode!=0:
+            # We are actively looking for failure,
+            # so do not proceed with tests
+            return
+        
+      Fout = F.call(inputs)
+      Fout2 = F2.call(inputs)
+
+      if main:
         outputs = F.generate_out(F.name()+"_out.txt")
         print(outputs)
         if isinstance(inputs,dict):
           outputs = F.convert_out(outputs)
           for k in F.name_out():
-            self.checkarray(Fout[k],outputs[k],digits=15)
+            self.checkarray(Fout[k],outputs[k],digits=digits)
         else:
           for i in range(F.n_out()):
-            self.checkarray(Fout[i],Fout2[i],digits=15)
+            self.checkarray(Fout[i],Fout2[i],digits=digits)
 
       if isinstance(inputs, dict):
         self.assertEqual(F.name_out(), F2.name_out())
         for k in F.name_out():
-          self.checkarray(Fout[k],Fout2[k],digits=15,failmessage=k)
+          self.checkarray(Fout[k],Fout2[k],digits=digits,failmessage=k)
       else:
         for i in range(F.n_out()):
-          self.checkarray(Fout[i],Fout2[i],digits=15)
+          self.checkarray(Fout[i],Fout2[i],digits=digits)
 
       if self.check_serialize:
         self.check_serialize(F2,inputs=inputs)
@@ -934,7 +1021,8 @@ class memory_heavy(object):
 
   def __call__(self, c):
     print(c)
-    c.__dict__["tag_memory_heavy"] = True
+    if c is not None:
+        c.__dict__["tag_memory_heavy"] = True
     return c
 
 class slow(object):

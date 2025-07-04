@@ -609,9 +609,7 @@ namespace casadi {
   void Matrix<Scalar>::print_scalar(std::ostream &stream) const {
     casadi_assert(numel()==1, "Not a scalar");
 
-    std::streamsize precision = stream.precision();
-    std::streamsize width = stream.width();
-    std::ios_base::fmtflags flags = stream.flags();
+    StreamStateGuard backup(stream);
 
     stream.precision(stream_precision_);
     stream.width(stream_width_);
@@ -627,9 +625,6 @@ namespace casadi {
       stream << scalar();
     }
     stream << std::flush;
-    stream.precision(precision);
-    stream.width(width);
-    stream.flags(flags);
   }
 
   template<typename Scalar>
@@ -719,6 +714,12 @@ namespace casadi {
     } else {
       print_sparse(stream, sp, nonzeros, truncate);
     }
+  }
+
+  template<typename Scalar>
+  void Matrix<Scalar>::print_canonical(std::ostream &stream, const Sparsity& sp,
+    const Scalar* nonzeros, bool truncate) {
+    casadi_error("'print_canonical' not defined for " + type_name());
   }
 
   template<typename Scalar>
@@ -1265,6 +1266,33 @@ namespace casadi {
   }
 
   template<typename Scalar>
+  std::vector< Matrix<Scalar> > Matrix<Scalar>::call(const Function& f,
+      const std::vector< Matrix<Scalar> > &x) {
+    // Flatten all inputs
+    std::vector<Scalar> dep;
+    for (auto & e : x) {
+      dep.insert(dep.end(), e.nonzeros().begin(), e.nonzeros().end());
+    }
+
+    std::vector<Scalar> r = Matrix<Scalar>::call(f, dep);
+
+    // Package rsults in 1-by-1 Matrix objects
+    std::vector< Matrix<Scalar> > ret;
+    ret.reserve(r.size());
+    for (auto & e : r) {
+      ret.push_back(e);
+    }
+
+    return ret;
+  }
+
+
+  template<typename Scalar>
+  std::vector<Scalar> Matrix<Scalar>::call(const Function& f, const std::vector< Scalar > &x) {
+    casadi_error("'call' not defined for " + type_name());
+  }
+
+  template<typename Scalar>
   Matrix<Scalar> Matrix<Scalar>::
   scalar_matrix(casadi_int op, const Matrix<Scalar> &x, const Matrix<Scalar> &y) {
     if ( (operation_checker<FX0Checker>(op) && y.nnz()==0) ||
@@ -1553,6 +1581,42 @@ namespace casadi {
 
     // Constant if we reach this point
     return true;
+  }
+
+  template<typename Scalar>
+  bool Matrix<Scalar>::is_call() const {
+    casadi_assert(is_scalar(), "'is_call' only defined for scalar expressions");
+
+    return false;
+  }
+
+  template<typename Scalar>
+  bool Matrix<Scalar>::is_output() const {
+    casadi_assert(is_scalar(), "'is_output' only defined for scalar expressions");
+
+    return false;
+  }
+
+  template<typename Scalar>
+  Matrix<Scalar> Matrix<Scalar>::get_output(casadi_int oind) const {
+    casadi_error("'get_output' not defined for " + type_name());
+  }
+
+  template<typename Scalar>
+  bool Matrix<Scalar>::has_output() const {
+    casadi_assert(is_scalar(), "'has_output' only defined for scalar expressions");
+
+    return false;
+  }
+
+  template<typename Scalar>
+  Function Matrix<Scalar>::which_function() const {
+    casadi_error("'which_function' not defined for " + type_name());
+  }
+
+  template<typename Scalar>
+  casadi_int Matrix<Scalar>::which_output() const {
+    casadi_error("'which_output' not defined for " + type_name());
   }
 
   template<typename Scalar>
@@ -2579,8 +2643,39 @@ namespace casadi {
   }
 
   template<typename Scalar>
+  void Matrix<Scalar>::extract_parametric(const Matrix<Scalar> &expr,
+        const Matrix<Scalar>& par,
+        Matrix<Scalar>& expr_ret,
+        std::vector<Matrix<Scalar> >& symbols,
+        std::vector< Matrix<Scalar> >& parametric,
+        const Dict& opts) {
+    casadi_error("'extract_parametric' not defined for " + type_name());
+  }
+
+  template<typename Scalar>
+  void Matrix<Scalar>::separate_linear(const Matrix<Scalar> &expr,
+      const Matrix<Scalar> &sym_lin, const Matrix<Scalar> &sym_const,
+      Matrix<Scalar>& expr_const, Matrix<Scalar>& expr_lin, Matrix<Scalar>& expr_nonlin) {
+    casadi_error("'separate_linear' not defined for " + type_name());
+  }
+
+  template<typename Scalar>
   bool Matrix<Scalar>::depends_on(const Matrix<Scalar> &x, const Matrix<Scalar> &arg) {
     casadi_error("'depends_on' not defined for " + type_name());
+    return false;
+  }
+
+  template<typename Scalar>
+  bool Matrix<Scalar>::contains_all(const std::vector <Matrix<Scalar> >& v,
+      const std::vector <Matrix<Scalar> > &n) {
+    casadi_error("'contains_all' not defined for " + type_name());
+    return false;
+  }
+
+  template<typename Scalar>
+  bool Matrix<Scalar>::contains_any(const std::vector<Matrix<Scalar> >& v,
+      const std::vector <Matrix<Scalar> > &n) {
+    casadi_error("'contains_any' not defined for " + type_name());
     return false;
   }
 
@@ -2850,6 +2945,12 @@ namespace casadi {
     return deserialize(ss);
   }
 
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+  template<typename Scalar>
+  std::mutex& Matrix<Scalar>::get_mutex_temp() {
+    casadi_error("'get_mutex_temp' not defined for " + type_name());
+  }
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
 } // namespace casadi
 

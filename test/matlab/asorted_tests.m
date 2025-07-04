@@ -1,5 +1,45 @@
 import casadi.*
 
+
+x = MX.sym('x',2,3);
+p = MX.sym('p');
+
+X = DM.rand(2,3);
+% brace
+for p0=1:6 
+    f = Function('f',{x,p},{x{p}});
+    f_ref = Function('f',{x},{x{p0}});
+    r = f(X,p0);
+    r_ref = f_ref(X);
+    assert(all(full(r==r_ref)));
+end
+% brace_asgn
+for p0=1:6
+    x = MX.sym('x',2,3);
+    p = MX.sym('p');
+
+    x1 = MX(x);
+    x2 = MX(x);
+    x1{p} = 3.7;
+    x2{p0} = 3.7;
+    
+    f = Function('f',{x,p},{x1});
+    f_ref = Function('f',{x},{x2});
+    r = f(X,p0);
+    r_ref = f_ref(X);
+    assert(all(all(full(r==r_ref))));
+end
+
+test_cases = {4 [1 2] [1;2] [1 2; 3 4] [1 2 3; 3 4 5] [1 2; 4 5; 7 8]};
+
+for i=numel(test_cases)
+    e=test_cases{i};
+    assert(all(sum(e)==full(sum(DM(e)))));
+    assert(all(sum(e,1)==full(sum(DM(e),1))));
+    assert(all(sum(e,2)==full(sum(DM(e),2))));
+    assert(all(sum(e,'all')==full(sum(DM(e),'all'))));
+end
+
 MX(2,1)
 
 % SX stuff
@@ -758,7 +798,7 @@ A = MX.sym('A',3,2);
 x = MX.sym('x');
 xi = 1;
 
-%f = Function('f',{A,x},{A{x}});assert(f(A0,xi)==A0{xi})
+f = Function('f',{A,x},{A{x}});assert(full(f(A0,xi)-A0{xi})==0)
 f = Function('f',{A,x},{A(x,:)});assert(full(norm(f(A0,xi)-A0(xi,:)))==0)
 f = Function('f',{A,x},{A(:,x)});assert(full(norm(f(A0,xi)-A0(:,xi)))==0)
 f = Function('f',{A,x},{A(1:2,x)});assert(full(norm(f(A0,xi)-A0(1:2,xi)))==0)
@@ -789,6 +829,17 @@ catch
 end
 
 assert(flag);
+
+x = MX.sym('x');
+f = Function('f',{x},{x.attachAssert(0, 'Hey %d \Warning foo')});
+
+msg = '';
+try
+  f()
+catch err
+  msg = err.message;
+end
+assert(~isempty(strfind(msg,'Hey %d \Warning foo')))
 
 
 disp('success')

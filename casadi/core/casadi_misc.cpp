@@ -26,6 +26,7 @@
 #include "mx.hpp"
 
 #include "casadi_misc.hpp"
+#include "casadi_os.hpp"
 #ifdef HAVE_MKSTEMPS
 #define CASADI_NEED_UNISTD
 #else // HAVE_MKSTEMPS
@@ -410,6 +411,19 @@ std::string simple_mkstemps(const std::string& prefix, const std::string& suffix
     stream << std::setprecision(std::numeric_limits<double>::digits10 + 1);
   }
 
+  StreamStateGuard::StreamStateGuard(std::ostream& os)
+  : stream_(os),
+    flags_(os.flags()),
+    precision_(os.precision()),
+    width_(os.width()),
+    locale_(os.getloc()) {}
+
+  StreamStateGuard::~StreamStateGuard() {
+    stream_.flags(flags_);
+    stream_.precision(precision_);
+    stream_.width(width_);
+    stream_.imbue(locale_);
+  }
 
   std::string str_bvec(bvec_t v) {
     std::stringstream ss;
@@ -431,6 +445,5 @@ std::string simple_mkstemps(const std::string& prefix, const std::string& suffix
     }
     return acc;
   }
-
 
 } // namespace casadi

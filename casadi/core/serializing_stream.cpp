@@ -28,9 +28,10 @@
 #include "slice.hpp"
 #include "linsol.hpp"
 #include "importer.hpp"
+#include "resource_internal.hpp"
 #include "fmu.hpp"
 #include "generic_type.hpp"
-#include "shared_object_internal.hpp"
+#include "shared_object.hpp"
 #include "sx_node.hpp"
 #include "sparsity_internal.hpp"
 #include "mx_node.hpp"
@@ -48,6 +49,13 @@ namespace casadi {
       casadi_assert(in_s.good(), "Invalid input stream. If you specified an input file, "
         "make sure it exists relative to the current directory.");
 
+      if (in_s.peek() != std::char_traits<char>::eof()) {
+        setup();
+      }
+    }
+
+    void DeserializingStream::setup() {
+      if (set_up_) return;
       // Sanity check
       casadi_int check;
       unpack(check);
@@ -66,7 +74,7 @@ namespace casadi {
       bool debug;
       unpack(debug);
       debug_ = debug;
-
+      set_up_ = true;
     }
 
     SerializingStream::SerializingStream(std::ostream& out_s) :
@@ -155,7 +163,7 @@ namespace casadi {
       for (int j=0;j<4;++j) pack(c[j]);
     }
 
-#if SIZE_MAX != UINT_MAX
+#if SIZE_MAX != UINT_MAX || defined(__EMSCRIPTEN__) || defined(__POWERPC__)
     void DeserializingStream::unpack(unsigned int& e) {
       assert_decoration('u');
       uint32_t n;
@@ -268,6 +276,16 @@ namespace casadi {
     void DeserializingStream::unpack(Importer& e) {
       assert_decoration('M');
       shared_unpack<Importer, ImporterInternal>(e);
+    }
+
+    void SerializingStream::pack(const Resource& e) {
+      decorate('R');
+      shared_pack(e);
+    }
+
+    void DeserializingStream::unpack(Resource& e) {
+      assert_decoration('R');
+      shared_unpack<Resource, ResourceInternal>(e);
     }
 
     void SerializingStream::pack(const Fmu& e) {

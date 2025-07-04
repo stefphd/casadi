@@ -122,6 +122,10 @@ namespace casadi {
     /// Collection of solvers
     static std::map<std::string, Plugin> solvers_;
 
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    static std::mutex mutex_solvers_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
+
     /// Infix
     static const std::string infix_;
 
@@ -155,6 +159,7 @@ namespace casadi {
   protected:
     /// Options
     std::vector<bool> discrete_;
+    std::vector<bool> equality_;
     bool print_problem_;
 
     /// Problem structure

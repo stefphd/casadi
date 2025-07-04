@@ -32,7 +32,7 @@
 #include "code_generator.hpp"
 #include "importer.hpp"
 #include "options.hpp"
-#include "shared_object_internal.hpp"
+#include "shared_object.hpp"
 #include "timing.hpp"
 #ifdef CASADI_WITH_THREAD
 #ifdef CASADI_WITH_THREAD_MINGW
@@ -81,6 +81,8 @@ namespace casadi {
 
       \identifier{jb} */
   struct CASADI_EXPORT FunctionMemory : public ProtoFunctionMemory {
+    bool stats_available;
+    FunctionMemory() : stats_available(false) {}
   };
 
   /** \brief Base class for FunctionInternal and LinsolInternal
@@ -165,6 +167,16 @@ namespace casadi {
 
     /// Memory objects
     void* memory(int ind) const;
+
+    /// Check for existance of memory object
+    bool has_memory(int ind) const;
+
+    /** \brief Check for validatity of memory object count
+    *
+    * Purpose if to allow more helpful error messages
+
+        \identifier{2b7} */
+    virtual void check_mem_count(casadi_int n) const { }
 
     /** \brief Create memory block
 
@@ -317,6 +329,19 @@ namespace casadi {
         \identifier{k7} */
     void finalize() override;
 
+    /** \brief Create memory block
+
+        \identifier{2d2} */
+    void* alloc_mem() const override { return new FunctionMemory(); }
+
+    /** \brief Free memory block
+
+        \identifier{2d3} */
+    void free_mem(void *mem) const override { delete static_cast<FunctionMemory*>(mem); }
+
+    /// Get all statistics
+    Dict get_stats(void* mem) const override;
+
     /** \brief Get a public class instance
 
         \identifier{k8} */
@@ -369,7 +394,8 @@ namespace casadi {
     /** \brief  Evaluate numerically
 
         \identifier{kb} */
-    int eval_gen(const double** arg, double** res, casadi_int* iw, double* w, void* mem) const;
+    int eval_gen(const double** arg, double** res, casadi_int* iw, double* w, void* mem,
+      bool always_inline, bool never_inline) const;
     virtual int eval(const double** arg, double** res, casadi_int* iw, double* w, void* mem) const;
     ///@}
 
@@ -377,7 +403,7 @@ namespace casadi {
 
         \identifier{kc} */
     virtual int eval_sx(const SXElem** arg, SXElem** res,
-      casadi_int* iw, SXElem* w, void* mem) const;
+      casadi_int* iw, SXElem* w, void* mem, bool always_inline, bool never_inline) const;
 
     /** \brief  Evaluate with symbolic matrices
 
@@ -397,10 +423,12 @@ namespace casadi {
     /** \brief Evaluate a function, overloaded
 
         \identifier{kf} */
-    int eval_gen(const SXElem** arg, SXElem** res, casadi_int* iw, SXElem* w, void* mem) const {
-      return eval_sx(arg, res, iw, w, mem);
+    int eval_gen(const SXElem** arg, SXElem** res, casadi_int* iw, SXElem* w, void* mem,
+        bool always_inline, bool never_inline) const {
+      return eval_sx(arg, res, iw, w, mem, always_inline, never_inline);
     }
-    int eval_gen(const bvec_t** arg, bvec_t** res, casadi_int* iw, bvec_t* w, void* mem) const {
+    int eval_gen(const bvec_t** arg, bvec_t** res, casadi_int* iw, bvec_t* w, void* mem,
+        bool always_inline, bool never_inline) const {
       return sp_forward(arg, res, iw, w, mem);
     }
     ///@}
@@ -779,6 +807,12 @@ namespace casadi {
         \identifier{ll} */
     void tocache(const Function& f, const std::string& suffix="") const;
 
+
+    /** \brief Save function to cache, only if missing
+
+        \identifier{29j} */
+    void tocache_if_missing(Function& f, const std::string& suffix="") const;
+
     /** \brief Generate code the function
 
         \identifier{lm} */
@@ -1147,6 +1181,16 @@ namespace casadi {
         \identifier{n3} */
     size_t sz_w() const { return sz_w_per_ + sz_w_tmp_;}
 
+    /** \brief Get required lengths, for codegen
+
+        \identifier{29g} */
+    /// @{
+    virtual size_t codegen_sz_arg(const CodeGenerator& g) const;
+    virtual size_t codegen_sz_res(const CodeGenerator& g) const;
+    virtual size_t codegen_sz_iw(const CodeGenerator& g) const;
+    virtual size_t codegen_sz_w(const CodeGenerator& g) const;
+    /// @}
+
     /** \brief Ensure required length of arg field
 
         \identifier{n4} */
@@ -1283,10 +1327,15 @@ namespace casadi {
     Dict cache_init_;
 
     /// Function cache
-    mutable std::map<std::string, WeakRef> cache_;
+    mutable WeakCache<std::string, Function> cache_;
 
     /// Cache for sparsities of the Jacobian blocks
     mutable std::vector<Sparsity> jac_sparsity_[2];
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    /// Mutex for thread safety
+    mutable std::mutex jac_sparsity_mtx_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
     /// If the function is the derivative of another function
     Function derivative_of_;
@@ -1328,6 +1377,9 @@ namespace casadi {
     bool print_in_;
     bool print_out_;
 
+    // Print canonical form
+    bool print_canonical_;
+
     // Warn when number of inputs or outputs exceed this value
     casadi_int max_io_;
 
@@ -1347,15 +1399,22 @@ namespace casadi {
     Function custom_jacobian_;
 
     // Counter for unique names for dumping inputs and output
-    mutable casadi_int dump_count_ = 0;
 #ifdef CASADI_WITH_THREAD
-    mutable std::mutex dump_count_mtx_;
+    mutable std::atomic<casadi_int> dump_count_;
+#else
+    mutable casadi_int dump_count_;
 #endif // CASADI_WITH_THREAD
 
     /** \brief Check if the function is of a particular type
 
         \identifier{np} */
     virtual bool is_a(const std::string& type, bool recursive) const;
+
+    /** \brief List merge opportunitities
+
+        \identifier{2b8} */
+    virtual void merge(const std::vector<MX>& arg,
+      std::vector<MX>& subs_from, std::vector<MX>& subs_to) const;
 
     /** \brief Can a derivative direction be skipped
 
@@ -1399,6 +1458,21 @@ namespace casadi {
 
         \identifier{nw} */
     void print_out(std::ostream &stream, double** res, bool truncate) const;
+
+    /** \brief Print canonical representation of a numeric matrix
+
+        \identifier{2dh} */
+    static void print_canonical(std::ostream &stream, const Sparsity& sp, const double* nz);
+
+    /** \brief Print canonical representation of a numeric vector
+
+        \identifier{2di} */
+    static void print_canonical(std::ostream &stream, casadi_int sz, const double* nz);
+
+    /** \brief Print canonical representation of a number
+
+        \identifier{2dj} */
+    static void print_canonical(std::ostream &stream, double a);
 
   protected:
     /** \brief Populate jac_sparsity_ and jac_sparsity_compact_ during initialization
@@ -1584,7 +1658,6 @@ namespace casadi {
   void FunctionInternal::
   call_gen(const std::vector<Matrix<D> >& arg, std::vector<Matrix<D> >& res,
            casadi_int npar, bool always_inline, bool never_inline) const {
-    casadi_assert(!never_inline, "Call-nodes only possible in MX expressions");
     std::vector< Matrix<D> > arg2 = project_arg(arg, npar);
 
     // Which arguments require mapped evaluation
@@ -1617,7 +1690,8 @@ namespace casadi {
     for (casadi_int p=0; p<npar; ++p) {
       // Call memory-less
       if (eval_gen(get_ptr(argp), get_ptr(resp),
-                   get_ptr(iw_tmp), get_ptr(w_tmp), memory(0))) {
+                   get_ptr(iw_tmp), get_ptr(w_tmp), memory(0),
+                   always_inline, never_inline)) {
         if (error_on_fail_) casadi_error("Evaluation failed");
       }
       // Update offsets

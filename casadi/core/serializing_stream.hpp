@@ -41,6 +41,7 @@ namespace casadi {
   class SXElem;
   class GenericType;
   class Importer;
+  class Resource;
   class Fmu;
   class SharedObject;
   class SharedObjectInternal;
@@ -76,6 +77,8 @@ namespace casadi {
     DeserializingStream(std::istream &in_s);
     DeserializingStream(const DeserializingStream&) = delete;
 
+    void setup();
+
     //@{
     /** \brief Reconstruct an object from the input stream
     *
@@ -93,13 +96,14 @@ namespace casadi {
     }
     void unpack(Function& e);
     void unpack(Importer& e);
+    void unpack(Resource& e);
     void unpack(Fmu& e);
     void unpack(GenericType& e);
     void unpack(std::ostream& s);
     void unpack(Slice& e);
     void unpack(int& e);
 
-#if SIZE_MAX != UINT_MAX
+#if SIZE_MAX != UINT_MAX || defined(__EMSCRIPTEN__) || defined(__POWERPC__)
     void unpack(unsigned int& e);
 #endif
     void unpack(bool& e);
@@ -201,6 +205,8 @@ namespace casadi {
     std::istream& in;
     /// Debug mode?
     bool debug_;
+    /// Did setup ran?
+    bool set_up_ = false;
   };
 
   /** \brief Helper class for Serialization
@@ -231,12 +237,13 @@ namespace casadi {
     }
     void pack(const Function& e);
     void pack(const Importer& e);
+    void pack(const Resource& e);
     void pack(const Fmu& e);
     void pack(const Slice& e);
     void pack(const GenericType& e);
     void pack(std::istream& s);
     void pack(int e);
-#if SIZE_MAX != UINT_MAX
+#if SIZE_MAX != UINT_MAX || defined(__EMSCRIPTEN__) || defined(__POWERPC__)
     void pack(unsigned int e);
 #endif
     void pack(bool e);

@@ -29,8 +29,9 @@
 #include <unordered_map>
 
 #include "dae_builder.hpp"
-#include "shared_object_internal.hpp"
+#include "shared_object.hpp"
 #include "casadi_enum.hpp"
+#include "resource.hpp"
 
 namespace casadi {
 
@@ -49,6 +50,20 @@ enum class Causality {PARAMETER, CALCULATED_PARAMETER, INPUT, OUTPUT, LOCAL, IND
 
 /// Variability: FMI 2.0 specification, section 2.2.7 or FMI 3.0 specification, section 2.4.7.4
 enum class Variability {CONSTANT, FIXED, TUNABLE, DISCRETE, CONTINUOUS, NUMEL};
+
+// CasADi classification of model variables, cf. Table 18 in FMI specification, 3.0.2
+//              PARAMETER  CALCULATED_PARAMETER  INPUT   OUTPUT   LOCAL    INDEPENDENT
+// CONSTANT     -          -                     -       C        C        -
+// FIXED        C          D                     -       -        D        -
+// TUNABLE      P          D                     -       -        D        -
+// DISCRETE     -          -                     U       X/Q      X/Q      -
+// CONTINUOUS   -          -                     U       X/Q/W/Z  X/Q/W/Z  T
+
+// Variable categories
+enum class Category {T, C, P, D, W, U, X, Z, Q, CALCULATED, NUMEL};
+
+// Output categories for generated functions
+enum class OutputCategory {ODE, ALG, QUAD, ZERO, DDEF, WDEF, Y, RATE, NUMEL};
 
 /// Initial: FMI 2.0 specification, section 2.2.7 or FMI 3.0 specification, section 2.4.7.5
 enum class Initial {EXACT, APPROX, CALCULATED, NA, NUMEL};
@@ -70,27 +85,33 @@ struct CASADI_EXPORT Variable {
 
  private:
   /// Constructor (only accessible via DaeBuilderInternal::new_variable)
-  Variable(casadi_int index, casadi_int numel, const std::string& name, const MX& v);
+  Variable(casadi_int index, const std::string& name,
+    const std::vector<casadi_int>& dimension, const MX& expr);
 
  public:
   /// @brief Location in variable vector
   casadi_int index;
 
-  /// Number of elements - product of all dimensions
-  casadi_int numel;
+  /// @brief  Name of the variable
+  std::string name;
 
   /// Dimensions
   std::vector<casadi_int> dimension;
 
+  /// Number of elements - product of all dimensions
+  casadi_int numel;
+
   /** Attributes common to all types of variables, cf. Table 17 in FMI specification */
   ///@{
-  std::string name;
   unsigned int value_reference;
   std::string description;
   Type type;
   Causality causality;
   Variability variability;
   ///@}
+
+  /// CasADi's classification of the variable
+  Category category;
 
   /** Type specific attributes common to all types, cf. Table FMI 3.0 specification */
   ///@{
@@ -106,14 +127,17 @@ struct CASADI_EXPORT Variable {
   double nominal;
   std::vector<double> start;
   casadi_int der_of;  // 'derivative' in FMI specification
-  // bool reinit;
+  casadi_int parent;
   ///@}
 
-  // corresponding residual variable
-  casadi_int alg;
-
-  // corresponding derivative variable
+  // corresponding derivative variable, if any
   casadi_int der;
+
+  // corresponding binding expression, if any
+  casadi_int bind;
+
+  // Does it appear in any right-hand-side?
+  bool in_rhs;
 
   /// Numerical value (also for booleans, integers, enums)
   std::vector<double> value;
@@ -130,26 +154,28 @@ struct CASADI_EXPORT Variable {
   /// Dependencies
   mutable std::vector<DependenciesKind> dependenciesKind;
 
-  /// Variable expression
+  /// Variable expression (always a vector)
   MX v;
 
-  /// Binding equation
-  MX beq;
+  /// Initial equation (to be removed and moved to a separate dependent variable)
+  MX ieq;
 
+  /// Total number of elements for a particular attribute
+  casadi_int size(Attribute a) const;
+
+  ///@{
   /// Get by attribute name
-  double attribute(Attribute a) const;
+  void get_attribute(Attribute a, double* val) const;
+  void get_attribute(Attribute a, std::vector<double>* val) const;
+  void get_attribute(Attribute a, std::string* val) const;
+  ///@}
 
+  ///@{
   /// Set by attribute name
   void set_attribute(Attribute a, double val);
-
-  /// Get by attribute name (string-valued)
-  std::string string_attribute(Attribute a) const;
-
-  /// Set by attribute name (string-valued)
-  void set_string_attribute(Attribute a, const std::string& val);
-
-  // Default initial attribute, per specification
-  static Initial default_initial(Causality causality, Variability variability);
+  void set_attribute(Attribute a, const std::vector<double>& val);
+  void set_attribute(Attribute a, const std::string& val);
+  ///@}
 
   // Export as XML
   XmlNode export_xml(const DaeBuilderInternal& self) const;
@@ -159,14 +185,32 @@ struct CASADI_EXPORT Variable {
 
   // Does the variable need a start attribute?
   bool has_start() const;
+
+  // Has the variable been set
+  bool is_set() const {
+    return !(type==Type::STRING ? stringvalue.empty() : std::isnan(value.front()));
+  }
+
+  // Does the variable have a binding equation
+  bool has_beq() const {return bind >= 0;}
+
+  // Does the variable need a derivative variable?
+  bool needs_der() const;
+
+  // Derivative of the expression, create at first encounter
+  MX get_der(DaeBuilderInternal& self, bool may_allocate = true);
+
+  // Derivative of the expression, never create
+  MX get_der(const DaeBuilderInternal& self) const;
 };
 
 /// \cond INTERNAL
 /// Internal class for DaeBuilder, see comments on the public class.
 class CASADI_EXPORT DaeBuilderInternal : public SharedObjectInternal {
   friend class DaeBuilder;
-  friend class Fmu2;
+  friend class FmuInternal;
   friend class FmuFunction;
+  friend class Variable;
 
  public:
 
@@ -187,35 +231,33 @@ class CASADI_EXPORT DaeBuilderInternal : public SharedObjectInternal {
    */
   ///@{
 
-  /// Eliminate all dependent variables
-  void eliminate_w();
+  /// Eliminate all variables of a category
+  void eliminate(Category cat);
+
+  /// Sort all variables of a category
+  void sort(Category cat);
 
   /// Lift problem formulation by extracting shared subexpressions
   void lift(bool lift_shared, bool lift_calls);
-
-  /// Eliminate quadrature states and turn them into ODE states
-  void eliminate_quad();
-
-  /// Sort dependent parameters
-  void sort_d();
-
-  /// Sort dependent variables
-  void sort_w();
 
   /// Sort algebraic variables
   void sort_z(const std::vector<std::string>& z_order);
 
   /// Classified variable indices (mutable)
-  std::vector<size_t>& ind_in(const std::string& v);
+  std::vector<size_t>& indices(Category cat);
 
   /// Classified variable indices (immutable)
-  const std::vector<size_t>& ind_in(const std::string& v) const;
+  const std::vector<size_t>& indices(Category cat) const;
 
-  /// Clear all variables of a class
-  void clear_all(const std::string& v);
+  /// Number of indices with a particular category
+  size_t size(Category cat) const {return indices(cat).size();}
 
-  /// Set all variables of a type
-  void set_all(const std::string& v, const std::vector<std::string>& name);
+  /// Reorder variables in a category
+  void reorder(Category cat, const std::vector<size_t>& v);
+
+  /// Reorder any index vector
+  void reorder(const std::string& n, std::vector<size_t>& ind,
+    const std::vector<size_t>& v) const;
 
   /// Prune unused controls
   void prune(bool prune_p, bool prune_u);
@@ -267,43 +309,17 @@ class CASADI_EXPORT DaeBuilderInternal : public SharedObjectInternal {
   static std::string generate(const std::vector<double>& v);
   ///@}
 
-  // Input convension in codegen
-  enum DaeBuilderInternalIn {
-    DAE_BUILDER_T,
-    DAE_BUILDER_C,
-    DAE_BUILDER_P,
-    DAE_BUILDER_D,
-    DAE_BUILDER_W,
-    DAE_BUILDER_U,
-    DAE_BUILDER_X,
-    DAE_BUILDER_Z,
-    DAE_BUILDER_Q,
-    DAE_BUILDER_Y,
-    DAE_BUILDER_NUM_IN
-  };
-
-  // Output convension in codegen
-  enum DaeBuilderInternalOut {
-    DAE_BUILDER_ODE,
-    DAE_BUILDER_ALG,
-    DAE_BUILDER_QUAD,
-    DAE_BUILDER_DDEF,
-    DAE_BUILDER_WDEF,
-    DAE_BUILDER_YDEF,
-    DAE_BUILDER_NUM_OUT
-  };
-
   // Get input expression, given enum
-  std::vector<MX> input(DaeBuilderInternalIn ind) const;
+  std::vector<MX> input(Category ind) const;
 
   // Get output expression, given enum
-  std::vector<MX> output(DaeBuilderInternalOut ind) const;
+  std::vector<MX> output(OutputCategory ind) const;
 
   // Get input expression, given enum
-  std::vector<MX> input(const std::vector<DaeBuilderInternalIn>& ind) const;
+  std::vector<MX> input(const std::vector<Category>& ind) const;
 
   // Get output expression, given enum
-  std::vector<MX> output(const std::vector<DaeBuilderInternalOut>& ind) const;
+  std::vector<MX> output(const std::vector<OutputCategory>& ind) const;
 
   /// Add a named linear combination of output expressions
   void add_lc(const std::string& name, const std::vector<std::string>& f_out);
@@ -325,17 +341,35 @@ class CASADI_EXPORT DaeBuilderInternal : public SharedObjectInternal {
       const std::vector<std::string>& s_in,
       const std::vector<std::string>& s_out) const;
 
+  /// Construct a function describing transition at a specific event
+  Function transition(const std::string& fname, casadi_int index,
+    bool dummy_index_input = false) const;
+
+  /// Construct a function describing transition at all events
+  Function transition(const std::string& fname) const;
+
   /// Function corresponding to all equations
   Function gather_eq() const;
 
   /// Get variable expression by name
   const MX& var(const std::string& name) const;
 
-  /// Get a derivative expression by name
-  MX der(const std::string& name) const;
+  /// Get a derivative expression by variable index (const, never create)
+  MX get_der(size_t ind) const {return variable(ind).get_der(*this);}
 
-  /// Get a derivative expression by non-differentiated expression
+  /// Get a derivative expression by variable index (non-const, may create)
+  MX get_der(size_t ind, bool may_allocate = true) {
+    return variable(ind).get_der(*this, may_allocate);
+  }
+
+  /// Get a derivative expression by non-differentiated expression (const, never create)
   MX der(const MX& var) const;
+
+  /// Get a derivative expression by non-differentiated expression (non-const, may create)
+  MX der(const MX& var, bool may_allocate = true);
+
+  /// Find a unique name, with a specific prefix
+  std::string unique_name(const std::string& prefix, bool allow_no_prefix = true) const;
 
   /// Readable name of the class
   std::string type_name() const {return "DaeBuilderInternal";}
@@ -351,13 +385,18 @@ class CASADI_EXPORT DaeBuilderInternal : public SharedObjectInternal {
   }
 
   /// Create a new variable
-  Variable& new_variable(const std::string& name, casadi_int numel = 1, const MX& v = MX());
+  Variable& new_variable(const std::string& name,
+    const std::vector<casadi_int>& dimension = {1},
+    const MX& expr = MX());
 
   /// Check if a particular variable exists
-  bool has_variable(const std::string& name) const;
+  bool has(const std::string& name) const;
 
   /// Get a list of all variables
-  std::vector<std::string> all_variables() const;
+  std::vector<std::string> all() const;
+
+  /// Get a list of all variables of a particular category
+  std::vector<std::string> all(Category cat) const;
 
   /// Length of variables array
   size_t n_variables() const {return variables_.size();}
@@ -375,22 +414,58 @@ class CASADI_EXPORT DaeBuilderInternal : public SharedObjectInternal {
   ///@}
 
   ///@{
+  /// Access a variable by Category and index
+  Variable& variable(Category cat, size_t ind) {return variable(indices(cat).at(ind));}
+  const Variable& variable(Category cat, size_t ind) const {
+    return variable(indices(cat).at(ind));
+  }
+  ///@}
+
+  ///@{
   /// Access a variable by name
   Variable& variable(const std::string& name) {return variable(find(name));}
   const Variable& variable(const std::string& name) const {return variable(find(name));}
   ///@}
 
+  ///@{
+  /// Access a variable by expression
+  Variable& variable(const MX& v) {return variable(find(v));}
+  const Variable& variable(const MX& v) const {return variable(find(v));}
+  ///@}
+
   /// Get variable expression by index
   const MX& var(size_t ind) const;
+
+  /// Get variable expression by category and index
+  const MX& var(Category cat, size_t ind) const {return var(indices(cat).at(ind));}
 
   /// Get variable expressions by index
   std::vector<MX> var(const std::vector<size_t>& ind) const;
 
-  /// Get index of variable
+  /// Get variable expressions by category
+  std::vector<MX> var(Category cat) const {return var(indices(cat));}
+
+  /// Get index of variable, given name
   size_t find(const std::string& name) const;
 
-  /// Get indices of variable
+  /// Get index of variable, given expression
+  size_t find(const MX& v) const;
+
+  /// Get indices of variable, given multiple names
   std::vector<size_t> find(const std::vector<std::string>& name) const;
+
+  /// Get indices of variable, given multiple expressions
+  std::vector<size_t> find(const std::vector<MX>& v) const;
+
+  /** \brief Get variable name by index
+
+      \identifier{2bv} */
+  const std::string& name(size_t ind) const;
+
+  /** \brief Get variable names by indices
+
+      \identifier{2bw} */
+  std::vector<std::string> name(const std::vector<size_t>& ind) const;
 
   /// Get the (cached) oracle, SX or MX
   const Function& oracle(bool sx = false, bool elim_w = false, bool lifted_calls = false) const;
@@ -405,16 +480,17 @@ class CASADI_EXPORT DaeBuilderInternal : public SharedObjectInternal {
 protected:
 
   /// Get the qualified name
-  static std::string qualified_name(const XmlNode& nn);
+  static std::string qualified_name(const XmlNode& nn, Attribute* att = 0);
 
   // User-set options
   bool debug_;
   double fmutol_;
+  bool ignore_time_;
 
   // FMI attributes
   std::string fmi_version_;
   std::string model_name_;
-  std::string guid_;
+  std::string instantiation_token_;  // In FMI 2: guid
   std::string description_;
   std::string author_;
   std::string copyright_;
@@ -424,89 +500,140 @@ protected:
   std::string variable_naming_convention_;
   casadi_int number_of_event_indicators_;
 
+  // Default experiment
+  double start_time_, stop_time_, tolerance_, step_size_;
+
   // Model Exchange
   std::string model_identifier_;
-  bool provides_directional_derivative_;
+  bool provides_directional_derivatives_;
+  bool provides_adjoint_derivatives_;
+  bool can_be_instantiated_only_once_per_process_;
   std::vector<std::string> source_files_;
 
   /// Name of instance
   std::string name_;
 
   // Path to FMU, if any
-  std::string path_;
+  Resource resource_;
 
   // Symbolic representation of the model equations?
   bool symbolic_;
+
+  // Detect quadrature states
+  bool detect_quad_;
+
+  // FMI major version
+  casadi_int fmi_major_;
 
   /// All variables
   std::vector<Variable*> variables_;
 
   // Model structure
-  std::vector<size_t> outputs_, derivatives_, initial_unknowns_;
+  std::vector<size_t> outputs_, derivatives_, initial_unknowns_, event_indicators_, residuals_,
+    rate_;
 
   /// Find of variable by name
   std::unordered_map<std::string, size_t> varind_;
 
-  /// Ordered variables
-  std::vector<size_t> t_, p_, u_, x_, z_, q_, c_, d_, w_, y_;
+  /// Find of variable by value reference
+  std::unordered_map<unsigned int, size_t> vrmap_;
 
-  ///@{
-  /// Ordered variables and equations
-  std::vector<MX> aux_;
-  std::vector<MX> init_lhs_, init_rhs_;
-  std::vector<MX> when_cond_, when_lhs_, when_rhs_;
-  ///@}
+  /// Ordered variables
+  std::vector<std::vector<size_t>> indices_;
+
+  // Initial equations
+  std::vector<size_t> init_;
+
+  // Event conditions and transition equations
+  std::vector<std::pair<size_t, std::vector<size_t>>> when_;
+
+ /** \brief Is there a time variable?
+
+     \identifier{2bx} */
+  bool has_t() const;
+
+  // Time variable
+  const MX& time() const;
 
   /** \brief Definitions of dependent constants
 
-      \identifier{u} */
+      \identifier{2c7} */
   std::vector<MX> cdef() const;
 
-  /** \brief Definitions of dependent parameters
+  /** \brief Initial conditions, left-hand-side
 
-      \identifier{v} */
-  std::vector<MX> ddef() const;
+      \identifier{2a7} */
+  std::vector<MX> init_lhs() const;
 
-  /** \brief Definitions of dependent variables
+  /** \brief Initial conditions, right-hand-side
 
-      \identifier{w} */
-  std::vector<MX> wdef() const;
+      \identifier{2a8} */
+  std::vector<MX> init_rhs() const;
 
-  /** \brief Definitions of output variables
+  /// Default variability attribute, per the FMI specification
+  static Variability default_variability(Causality causality, Type type);
 
-      \identifier{x} */
-  std::vector<MX> ydef() const;
+  // Default initial attribute, per the FMI specification
+  static Initial default_initial(Causality causality, Variability variability);
 
-  /** \brief ODE right hand sides
-
-      \identifier{y} */
-  std::vector<MX> ode() const;
-
-  /** \brief Algebraic right hand sides
-
-      \identifier{z} */
-  std::vector<MX> alg() const;
-
-  /** \brief Quadrature right hand sides
-
-      \identifier{10} */
-  std::vector<MX> quad() const;
-
-  ///@{
   /// Add a new variable
-  MX add_t(const std::string& name);
-  MX add_p(const std::string& name);
-  MX add_u(const std::string& name);
-  MX add_x(const std::string& name);
-  MX add_z(const std::string& name);
-  MX add_q(const std::string& name);
-  MX add_c(const std::string& name, const MX& new_cdef);
-  MX add_d(const std::string& name, const MX& new_ddef);
-  MX add_w(const std::string& name, const MX& new_wdef);
-  MX add_y(const std::string& name, const MX& new_ydef);
-  void set_ode(const std::string& name, const MX& ode_rhs);
-  void set_alg(const std::string& name, const MX& alg_rhs);
-  ///@}
+  Variable& add(const std::string& name, Causality causality, Variability variability,
+    const Dict& opts);
+
+  /// Add a new variable, expression provided
+  Variable& add(const std::string& name, Causality causality, Variability variability,
+    const MX& expr, const Dict& opts);
+
+  /// Add a new variable, default variability
+  Variable& add(const std::string& name, Causality causality, const Dict& opts);
+
+  /// Add a new variable, default variability and causality
+  Variable& add(const std::string& name, const Dict& opts) {
+    // Per FMI 3.0.2 specification, section 2.4.7.4: Default causality is LOCAL
+    return add(name, Causality::LOCAL, opts);
+  }
+
+  /// Set or change the category for a variable
+  void categorize(size_t ind, Category cat);
+
+  /// Insert into list of variables, keeping it ordered
+  void insert(std::vector<size_t>& v, size_t ind) const;
+
+  /// Remove from list of variables
+  void remove(std::vector<size_t>& v, size_t ind) const;
+
+  /// Get causality
+  Causality causality(size_t ind) const;
+
+  /// Set causality
+  void set_causality(size_t ind, Causality causality);
+
+  /// Get variability
+  Variability variability(size_t ind) const;
+
+  /// Set variability
+  void set_variability(size_t ind, Variability variability);
+
+  /// Get category
+  Category category(size_t ind) const;
+
+  /// Set category
+  void set_category(size_t ind, Category cat);
+
+  /// Add a simple equation
+  void eq(const MX& lhs, const MX& rhs, const Dict& opts);
+
+  /// Add when equations
+  void when(const MX& cond, const std::vector<std::string>& eqs, const Dict& opts);
+
+  /// Assignment inside when-equations or if-else equations
+  Variable& assign(const std::string& name, const MX& val);
+
+  /// Reinitialize a state inside when-equations
+  Variable& reinit(const std::string& name, const MX& val);
+
+  /// Set a initial equation
+  void set_init(const std::string& name, const MX& init_rhs);
 
   /// Linear combinations of output expressions
   Function::AuxOut lc_;
@@ -527,8 +654,20 @@ protected:
   /// Read an equation
   MX read_expr(const XmlNode& node);
 
+  /// Read an identifier expression
+  MX read_identifier(const XmlNode& node);
+
   /// Read a variable
-  Variable& read_variable(const XmlNode& node);
+  Variable& read_variable(const XmlNode& node, Attribute* att = 0);
+
+  // Read DefaultExperiment
+  void import_default_experiment(const XmlNode& n);
+
+  // Read dependencies node
+  std::vector<casadi_int> read_dependencies(const XmlNode& n);
+
+  // Read dependenciesKind node
+  std::vector<DependenciesKind> read_dependencies_kind(const XmlNode& n, size_t ndep);
 
   // Read ModelExchange
   void import_model_exchange(const XmlNode& n);
@@ -538,6 +677,15 @@ protected:
 
   // Read ModelStructure
   void import_model_structure(const XmlNode& n);
+
+  // Read symbolic binding equations
+  void import_binding_equations(const XmlNode& eqs);
+
+  // Read symbolic dynamic equations
+  void import_dynamic_equations(const XmlNode& eqs);
+
+  // Read symbolic initial equations
+  void import_initial_equations(const XmlNode& eqs);
 
   /// Problem structure has changed: Clear cache
   void clear_cache() const;
@@ -586,6 +734,8 @@ protected:
     const std::vector<std::string>& val);
   ///@}
 
+  /// Total number of elements for a particular attribute
+  casadi_int size(Attribute a, const std::vector<std::string>& name) const;
 
   /// Helper class, represents inputs and outputs for a function call node
   struct CallIO {
@@ -630,16 +780,6 @@ protected:
 };
 
 ///@{
-/// Number of entries in enums
-template<> struct enum_traits<DaeBuilderInternal::DaeBuilderInternalIn> {
-  static const size_t n_enum = DaeBuilderInternal::DAE_BUILDER_NUM_IN;
-};
-template<> struct enum_traits<DaeBuilderInternal::DaeBuilderInternalOut> {
-  static const size_t n_enum = DaeBuilderInternal::DAE_BUILDER_NUM_OUT;
-};
-///@}
-
-///@{
 /// Version mappings
 CASADI_EXPORT Type from_fmi2(TypeFmi2 v);
 CASADI_EXPORT TypeFmi2 to_fmi2(Type v);
@@ -654,9 +794,32 @@ CASADI_EXPORT std::string to_string(Variability v);
 CASADI_EXPORT std::string to_string(Initial v);
 CASADI_EXPORT std::string to_string(Attribute v);
 CASADI_EXPORT std::string to_string(DependenciesKind v);
-CASADI_EXPORT std::string to_string(DaeBuilderInternal::DaeBuilderInternalIn v);
-CASADI_EXPORT std::string to_string(DaeBuilderInternal::DaeBuilderInternalOut v);
+CASADI_EXPORT std::string to_string(Category v);
+CASADI_EXPORT std::string to_string(OutputCategory v);
 ///@}
+
+///@{
+/// Get description
+CASADI_EXPORT std::string description(Category v);
+///@}
+
+// Check if input category
+CASADI_EXPORT bool is_input_category(Category cat);
+
+// Check if acyclic dependency category
+CASADI_EXPORT bool is_acyclic(Category cat);
+
+// Definition for acyclyc dependency categories
+CASADI_EXPORT OutputCategory dependent_definition(Category cat);
+
+// Get all input categories
+CASADI_EXPORT std::vector<Category> input_categories();
+
+// Get all output categories
+CASADI_EXPORT std::vector<OutputCategory> output_categories();
+
+// Get the input category for a particular output category
+CASADI_EXPORT Category input_category(OutputCategory cat);
 
 /// \endcond
 

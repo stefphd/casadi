@@ -39,14 +39,36 @@ namespace casadi {
 
     \identifier{1lp} */
 struct CASADI_EXPORT IntegratorMemory : public OracleMemory {
+  // Work vectors, forward problem
+  double *q, *x, *z, *p, *u, *e, *edot, *old_e, *xdot, *zdot;
+  // Work vectors, backward problem
+  double *adj_x, *adj_z, *adj_p, *adj_q;
+  // Temporary work vectors of length max(nx + nz, nrx, nrz)
+  double *tmp1, *tmp2;
   // Current control interval
   casadi_int k;
   // Current time
   double t;
   // Next time to be visited by the integrator
   double t_next;
-  // Next stop time due to step change in input, continuous
+  // Time not to be exceeded by during integrator integration
   double t_stop;
+  // Time at the beginning of the current control interval
+  double t_start;
+  // Next output time
+  double t_next_out;
+  // Next stop time due to step change in input
+  double t_step;
+  // Which events have been triggered
+  casadi_int *event_triggered;
+  // Do we need to reset the solver?
+  bool reset_solver;
+  // Number of root-finding iterations for a single event
+  casadi_int event_iter;
+  // Number of events encountered thus far
+  casadi_int num_events;
+  // Index of event last triggered
+  casadi_int event_index;
 };
 
 /// Memory struct, forward sparsity pattern propagation
@@ -128,28 +150,76 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
       \identifier{1ly} */
   void init(const Dict& opts) override;
 
+  /** \brief Set the (persistent) work vectors
+
+      \identifier{29m} */
+  void set_work(void* mem, const double**& arg, double**& res,
+    casadi_int*& iw, double*& w) const override;
+
   /** Helper for a more powerful 'integrator' factory */
   virtual Function create_advanced(const Dict& opts);
 
   virtual MX algebraic_state_init(const MX& x0, const MX& z0) const { return z0; }
   virtual MX algebraic_state_output(const MX& Z) const { return Z; }
 
-  /** \brief Reset the forward problem
+  // Set the quadrature states
+  void set_q(IntegratorMemory* m, const double* q) const;
 
-      \identifier{25a} */
-  virtual void reset(IntegratorMemory* mem,
-    const double* x, const double* z, const double* p) const = 0;
+  // Set the differential states
+  void set_x(IntegratorMemory* m, const double* x) const;
+
+  // Set the algebraic variables
+  void set_z(IntegratorMemory* m, const double* z) const;
+
+  // Set the parameters
+  void set_p(IntegratorMemory* m, const double* p) const;
+
+  // Set the controls
+  void set_u(IntegratorMemory* m, const double* u) const;
+
+  // Get the quadrature states
+  void get_q(IntegratorMemory* m, double* q) const;
+
+  // Get the differential states
+  void get_x(IntegratorMemory* m, double* x) const;
+
+  // Get the algebraic variables
+  void get_z(IntegratorMemory* m, double* z) const;
+
+  /** \brief  Reset the forward solver at the start or after an event
+
+      \identifier{29n} */
+  virtual void reset(IntegratorMemory* mem, bool first_call) const {}
 
   /** \brief  Find next stop time
 
       \identifier{25b} */
   casadi_int next_stop(casadi_int k, const double* u) const;
 
-  /** \brief  Advance solution in time
+  /** \brief Linearize the zero crossing function
 
-      \identifier{25c} */
-  virtual void advance(IntegratorMemory* mem,
-    const double* u, double* x, double* z, double* q) const = 0;
+      \identifier{29o} */
+  int calc_edot(IntegratorMemory* m) const;
+
+  /** \brief Predict next event time
+
+      \identifier{29p} */
+  int predict_events(IntegratorMemory* m) const;
+
+  /** \brief Trigger an event
+
+      \identifier{29q} */
+  int trigger_event(IntegratorMemory* m, casadi_int* ind) const;
+
+  /** \brief  Advance solution in time, with events handling
+
+      \identifier{29r} */
+  int advance(IntegratorMemory* m) const;
+
+  /** \brief  Advance solution in time, without events handling
+
+      \identifier{29s} */
+  virtual int advance_noevent(IntegratorMemory* mem) const = 0;
 
   /** \brief Reset the backward problem
 
@@ -165,13 +235,13 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
 
       \identifier{25f} */
   virtual void impulseB(IntegratorMemory* mem,
-    const double* rx, const double* rz, const double* rp) const = 0;
+    const double* adj_x, const double* adj_z, const double* adj_q) const = 0;
 
   /** \brief  Retreat solution in time
 
       \identifier{25g} */
   virtual void retreat(IntegratorMemory* mem, const double* u,
-    double* rx, double* rq, double* uq) const = 0;
+    double* adj_x, double* adj_p, double* adj_u) const = 0;
 
   /** \brief  evaluate
 
@@ -193,13 +263,13 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
 
   /// Forward sparsity pattern propagation through DAE, backward problem
   int bdae_sp_forward(SpForwardMem* m, const bvec_t* x, const bvec_t* z,
-    const bvec_t* p, const bvec_t* u, const bvec_t* rx, const bvec_t* rp,
+    const bvec_t* p, const bvec_t* u, const bvec_t* adj_ode, const bvec_t* adj_quad,
     bvec_t* adj_x, bvec_t* adj_z) const;
 
   /// Forward sparsity pattern propagation through quadratures, backward problem
   int bquad_sp_forward(SpForwardMem* m, const bvec_t* x, const bvec_t* z,
-    const bvec_t* p, const bvec_t* u, const bvec_t* rx, const bvec_t* rz, const bvec_t* rp,
-    bvec_t* adj_p, bvec_t* adj_u) const;
+    const bvec_t* p, const bvec_t* u, const bvec_t* adj_ode, const bvec_t* adj_alg,
+    const bvec_t* adj_quad, bvec_t* adj_p, bvec_t* adj_u) const;
 
   /** \brief  Propagate sparsity forward
 
@@ -217,12 +287,12 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
 
   /// Reverse sparsity pattern propagation through DAE, backward problem
   int bdae_sp_reverse(SpReverseMem* m, bvec_t* x, bvec_t* z,
-    bvec_t* p, bvec_t* u, bvec_t* rx, bvec_t* rp,
+    bvec_t* p, bvec_t* u, bvec_t* adj_ode, bvec_t* adj_quad,
     bvec_t* adj_x, bvec_t* adj_z) const;
 
   /// Reverse sparsity pattern propagation through quadratures, backward problem
   int bquad_sp_reverse(SpReverseMem* m, bvec_t* x, bvec_t* z,
-    bvec_t* p, bvec_t* u, bvec_t* rx, bvec_t* rz, bvec_t* rp,
+    bvec_t* p, bvec_t* u, bvec_t* adj_ode, bvec_t* adj_alg, bvec_t* adj_quad,
     bvec_t* adj_p, bvec_t* adj_u) const;
 
   /** \brief  Propagate sparsity backwards
@@ -255,7 +325,7 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
                         const std::vector<std::string>& inames,
                         const std::vector<std::string>& onames,
                         const Dict& opts) const override;
-  bool has_reverse(casadi_int nadj) const override { return true;}
+  bool has_reverse(casadi_int nadj) const override { return ne_ == 0;}
   ///@}
 
   /** \brief Set solver specific options to generated augmented integrators
@@ -298,8 +368,8 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
   enum QuadOut { QUAD_QUAD, QUAD_NUM_OUT};
   static std::vector<std::string> quad_out() { return {"quad"}; }
   enum BDynIn { BDYN_T, BDYN_X, BDYN_Z, BDYN_P, BDYN_U,
-    BDYN_OUT_ODE, BDYN_OUT_ALG, BDYN_OUT_QUAD,
-    BDYN_ADJ_ODE, BDYN_ADJ_ALG, BDYN_ADJ_QUAD, BDYN_NUM_IN};
+    BDYN_OUT_ODE, BDYN_OUT_ALG, BDYN_OUT_QUAD, BDYN_OUT_ZERO,
+    BDYN_ADJ_ODE, BDYN_ADJ_ALG, BDYN_ADJ_QUAD, BDYN_ADJ_ZERO, BDYN_NUM_IN};
   static std::string bdyn_in(casadi_int i);
   static std::vector<std::string> bdyn_in();
   enum BDynOut { BDYN_ADJ_T, BDYN_ADJ_X, BDYN_ADJ_Z, BDYN_ADJ_P, BDYN_ADJ_U, BDYN_NUM_OUT};
@@ -335,6 +405,12 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
   /// Number of controls
   casadi_int nu_, nu1_;
 
+  /// Number of of zero-crossing functions
+  casadi_int ne_;
+
+  /// Length of the tmp1, tmp2 vectors
+  casadi_int ntmp_;
+
   // Nominal values for states
   std::vector<double> nom_x_, nom_z_;
 
@@ -347,6 +423,21 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
   /// Options
   bool print_stats_;
 
+  /// Function to be called at state events
+  Function transition_;
+
+  /// Maximum number of event iterations for a single event
+  casadi_int max_event_iter_;
+
+  /// Maximum total number of events during the simulation
+  casadi_int max_events_;
+
+  /// Termination tolerance for the event iteration
+  double event_tol_;
+
+  /// Acceptable tolerance for the event iteration
+  double event_acceptable_tol_;
+
   // Creator function for internal class
   typedef Integrator* (*Creator)(const std::string& name, const Function& oracle,
     double t0, const std::vector<double>& tout);
@@ -356,6 +447,10 @@ Integrator : public OracleFunction, public PluginInterface<Integrator> {
 
   /// Collection of solvers
   static std::map<std::string, Plugin> solvers_;
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    static std::mutex mutex_solvers_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
   /// Infix
   static const std::string infix_;
@@ -458,14 +553,11 @@ enum BStepOut {
 };
 
 struct CASADI_EXPORT FixedStepMemory : public IntegratorMemory {
-  // Work vectors, allocated in base class
-  double *x, *z, *rx, *rz, *rq, *x_prev, *rx_prev;
-
   /// Work vectors, forward problem
-  double *v, *p, *u, *q, *v_prev, *q_prev;
+  double *v, *v_prev, *q_prev;
 
   /// Work vectors, backward problem
-  double *rv, *rp, *uq, *rq_prev, *uq_prev;
+  double *rv, *adj_u, *adj_p_prev, *adj_u_prev;
 
   /// State and dependent variables at all times
   double *x_tape, *v_tape;
@@ -519,30 +611,28 @@ class CASADI_EXPORT FixedStepIntegrator : public Integrator {
   /// Setup step functions
   virtual void setup_step() = 0;
 
-  /** \brief Reset the forward problem
+  /** \brief  Reset the forward solver at the start or after an event
 
-      \identifier{25i} */
-  void reset(IntegratorMemory* mem,
-    const double* x, const double* z, const double* p) const override;
+      \identifier{29t} */
+  void reset(IntegratorMemory* mem, bool first_call) const override;
 
   /** \brief  Advance solution in time
 
       \identifier{25j} */
-  void advance(IntegratorMemory* mem,
-    const double* u, double* x, double* z, double* q) const override;
+  int advance_noevent(IntegratorMemory* mem) const override;
 
   /// Reset the backward problem and take time to tf
   void resetB(IntegratorMemory* mem) const override;
 
   /// Introduce an impulse into the backwards integration at the current time
   void impulseB(IntegratorMemory* mem,
-    const double* rx, const double* rz, const double* rp) const override;
+    const double* adj_x, const double* adj_z, const double* adj_q) const override;
 
   /** \brief Retreat solution in time
 
       \identifier{25k} */
   void retreat(IntegratorMemory* mem, const double* u,
-    double* rx, double* rq, double* uq) const override;
+    double* adj_x, double* adj_p, double* adj_u) const override;
 
   /// Take integrator step forward
   void stepF(FixedStepMemory* m, double t, double h,
@@ -551,8 +641,8 @@ class CASADI_EXPORT FixedStepIntegrator : public Integrator {
   /// Take integrator step backward
   void stepB(FixedStepMemory* m, double t, double h,
     const double* x0, const double* xf, const double* vf,
-    const double* rx0, const double* rv0,
-    double* rxf, double* rqf, double* uqf) const;
+    const double* adj_xf, const double* rv0,
+    double* adj_x0, double* adj_p, double* adj_u) const;
 
   // Target number of finite elements
   casadi_int nk_target_;

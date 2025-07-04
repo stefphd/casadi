@@ -7,14 +7,23 @@
       },
     "configurePresets": [
         {
-            "name": "core",
-            "hidden": true,
+            "name": "release",
+            "displayName": "Release build, default compiler",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
-            "installDir": "${sourceDir}/out/install/${presetName}"
+            "installDir": "${sourceDir}/out/install/${presetName}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "WITH_SELFCONTAINED": "ON",
+                "WITH_BUILD_REQUIRED" : "ON",
+                "WITH_OPENMP" : "ON"
+            }
         },
         {
             "name": "debug",
-            "displayName": "Minimal development version",
+            "displayName": "Debug build, default compiler",
+            "inherits": [
+                "release"
+            ],
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "WITH_LINT": "ON",
@@ -22,10 +31,12 @@
             }
         },
         {
-            "name": "release",
+            "name": "windows-only",
             "hidden": true,
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+            "condition": {
+              "type": "equals",
+              "lhs": "${hostSystemName}",
+              "rhs": "Windows"
             }
         },
         {
@@ -36,7 +47,26 @@
                 "WITH_THREAD_MINGW": "ON",
                 "CMAKE_C_COMPILER": "gcc",
                 "CMAKE_CXX_COMPILER": "g++"
-            }
+            },
+            "inherits": [
+                "windows-only"
+            ]
+        },
+        {
+            "name": "mingw-release",
+            "displayName": "Windows release build, MinGW",
+            "inherits": [
+                "release",
+                "mingw"
+            ]
+        },
+        {
+            "name": "mingw-debug",
+            "displayName": "Windows debug build, MinGW",
+            "inherits": [
+                "debug",
+                "mingw"
+            ]
         },
         {
             "name": "cl",
@@ -45,7 +75,26 @@
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "cl",
                 "CMAKE_CXX_COMPILER": "cl"
-            }
+            },
+            "inherits": [
+                "windows-only"
+            ]
+        },
+        {
+            "name": "cl-release",
+            "displayName": "Windows release build, MSVC",
+            "inherits": [
+                "release",
+                "cl"
+            ]
+        },
+        {
+            "name": "cl-debug",
+            "displayName": "Windows debug build, MSVC",
+            "inherits": [
+                "debug",
+                "cl"
+            ]
         },
         {
             "name": "clang-cl",
@@ -59,58 +108,26 @@
                 "microsoft.com/VisualStudioSettings/CMake/1.0": {
                   "intelliSenseMode": "windows-clang-x64"
                 }
-            }
-        },
-        {
-            "name": "python",
-            "hidden": true,
-            "cacheVariables": {
-                "WITH_PYTHON": "ON"
-            }
-        },
-        {
-            "name": "common",
-            "hidden": true,
-            "cacheVariables": {
-                "WITH_IPOPT": "ON",
-                "WITH_OPENMP": "ON",
-                "WITH_QPOASES": "ON",
-                "WITH_LAPACK": "ON"
-            }
-        },
-        {
-            "name": "devel",
-            "displayName": "Linux developer",
+            },
             "inherits": [
-                "debug",
-                "python",
-                "core",
-                "common"
-            ],
-            "cacheVariables": {
-                "PYTHON_PREFIX": "${sourceDir}/out/install/${presetName}/python",
-                "WITH_CLANG": "OFF"
-            }
-        },
-        {
-            "name": "windevel",
-            "displayName": "Windows developer (MinGW)",
-            "inherits": [
-                "common",
-                "mingw",
-                "core",
-                "debug",
-                "python"
+                "windows-only"
             ]
         },
         {
-            "name": "windevel_cl",
-            "displayName": "Windows developer (Visual C++)",
+            "name": "clang-cl-release",
+            "displayName": "Windows release build, clang-cl",
             "inherits": [
-                "cl",
-                "core",
-                "debug"
+                "release",
+                "cl"
+            ]
+        },
+        {
+            "name": "clang-cl-debug",
+            "displayName": "Windows debug build, clang-cl",
+            "inherits": [
+                "debug",
+                "cl"
             ]
         }
-      ]
+    ]
 }

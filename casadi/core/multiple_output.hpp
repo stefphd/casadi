@@ -80,6 +80,7 @@ namespace casadi {
 
         \identifier{1ps} */
     explicit MultipleOutput(DeserializingStream& s) : MXNode(s) {}
+
   };
 
   class CASADI_EXPORT OutputNode : public MXNode {

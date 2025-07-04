@@ -63,6 +63,12 @@ namespace casadi {
     casadi_math<MX>::fun(op_, arg[0], dummy, res[0]);
   }
 
+  void UnaryMX::eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const {
+    MX dummy[3];
+    casadi_math<MX>::fun_linear(op_, arg[0].data(), dummy, res[0].data());
+  }
+
   void UnaryMX::ad_forward(const std::vector<std::vector<MX> >& fseed,
                      std::vector<std::vector<MX> >& fsens) const {
     // Get partial derivatives
@@ -101,7 +107,9 @@ namespace casadi {
 
   void UnaryMX::generate(CodeGenerator& g,
                           const std::vector<casadi_int>& arg,
-                          const std::vector<casadi_int>& res) const {
+                          const std::vector<casadi_int>& res,
+                          const std::vector<bool>& arg_is_ref,
+                          std::vector<bool>& res_is_ref) const {
     std::string r, x;
     if (nnz()==1) {
       // Scalar assignment
@@ -112,7 +120,8 @@ namespace casadi {
       g.local("cs", "const casadi_real", "*");
       g.local("rr", "casadi_real", "*");
       g.local("i", "casadi_int");
-      g << "for (i=0, rr=" << g.work(res[0], nnz()) << ", cs=" << g.work(arg[0], nnz())
+      g << "for (i=0, rr=" << g.work(res[0], nnz(), false) << ", cs="
+        << g.work(arg[0], nnz(), arg_is_ref[0])
         << "; i<" << sparsity().nnz() << "; ++i) ";
       r = "*rr++";
       x = "*cs++";

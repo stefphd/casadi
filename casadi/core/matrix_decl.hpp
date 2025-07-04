@@ -38,6 +38,13 @@
 #include <typeinfo>
 #include <vector>
 #include <initializer_list>
+#ifdef CASADI_WITH_THREAD
+#ifdef CASADI_WITH_THREAD_MINGW
+#include <mingw.mutex.h>
+#else // CASADI_WITH_THREAD_MINGW
+#include <mutex>
+#endif // CASADI_WITH_THREAD_MINGW
+#endif //CASADI_WITH_THREAD
 
 namespace casadi {
 
@@ -284,6 +291,9 @@ namespace casadi {
                                           const Matrix<Scalar> &x, const Matrix<Scalar> &y);
     static Matrix<Scalar> matrix_matrix(casadi_int op,
                                           const Matrix<Scalar> &x, const Matrix<Scalar> &y);
+    static std::vector< Matrix<Scalar> > call(const Function& f,
+        const std::vector< Matrix<Scalar> > &x);
+    static std::vector< Scalar > call(const Function& f, const std::vector< Scalar > &x);
     ///@}
     /// \endcond
 
@@ -356,6 +366,12 @@ namespace casadi {
                                         const Matrix<Scalar> &x_default,
                                         bool short_circuit=false);
     static bool depends_on(const Matrix<Scalar> &x, const Matrix<Scalar> &arg);
+    static bool contains(const std::vector<Matrix<Scalar> >& v, const Matrix<Scalar> &n);
+    static bool contains_all(const std::vector<Matrix<Scalar> >& v,
+        const std::vector<Matrix<Scalar> > &n);
+    static bool contains_any(const std::vector<Matrix<Scalar> >& v,
+        const std::vector<Matrix<Scalar> > &n);
+
     static Matrix<Scalar> mrdivide(const Matrix<Scalar> &x, const Matrix<Scalar> &y);
     static Matrix<Scalar> mldivide(const Matrix<Scalar> &x, const Matrix<Scalar> &y);
     static std::vector<Matrix<Scalar> > symvar(const Matrix<Scalar> &x);
@@ -417,6 +433,15 @@ namespace casadi {
     static Matrix<Scalar> mac(const Matrix<Scalar> &x,
                                 const Matrix<Scalar> &y,
                                 const Matrix<Scalar> &z);
+    static void extract_parametric(const Matrix<Scalar> &expr,
+        const Matrix<Scalar>& par,
+        Matrix<Scalar>& expr_ret,
+        std::vector<Matrix<Scalar> >& symbols,
+        std::vector<Matrix<Scalar>>& parametric,
+        const Dict& opts);
+    static void separate_linear(const Matrix<Scalar> &expr,
+      const Matrix<Scalar> &sym_lin, const Matrix<Scalar> &sym_const,
+      Matrix<Scalar>& expr_const, Matrix<Scalar>& expr_lin, Matrix<Scalar>& expr_nonlin);
     ///@}
 
     ///@{
@@ -749,6 +774,12 @@ namespace casadi {
      * taylor(sin(x), x)
      * \endcode
      * \verbatim >>   x \endverbatim
+     *
+     * \code
+     * taylor(sin(x),x,x0) -> sin(x0)+cos(x0)*(x-x0)
+     * \endcode
+     *
+     * \sa linearize, mtaylor, linear_coeff
 
         \identifier{23q} */
     friend inline Matrix<Scalar> taylor(const Matrix<Scalar>& ex, const Matrix<Scalar>& x,
@@ -765,6 +796,7 @@ namespace casadi {
      * Do Taylor expansions until the aggregated order of a term is equal to 'order'.
      * The aggregated order of \f$x^n y^m\f$ equals \f$n+m\f$.
      *
+     * \sa taylor
 
         \identifier{23r} */
     friend inline Matrix<Scalar> mtaylor(const Matrix<Scalar>& ex, const Matrix<Scalar>& x,
@@ -796,6 +828,7 @@ namespace casadi {
      * \endcode
      * \f$  (-3 x^2 y-x^3)/6+y+x \f$
      *
+     * \sa taylor
 
         \identifier{23s} */
     friend inline Matrix<Scalar> mtaylor(const Matrix<Scalar>& ex, const Matrix<Scalar>& x,
@@ -903,6 +936,10 @@ namespace casadi {
     static void print_vector(std::ostream &stream, const Sparsity& sp, const Scalar* nonzeros,
       bool truncate=true);
 
+    /// Print canonical style
+    static void print_canonical(std::ostream &stream, const Sparsity& sp, const Scalar* nonzeros,
+        bool truncate=true);
+
     /// Print scalar
     static void print_sparse(std::ostream &stream, const Sparsity& sp, const Scalar* nonzeros,
       bool truncate=true);
@@ -977,6 +1014,11 @@ namespace casadi {
 
         \identifier{19j} */
     Sparsity get_sparsity() const;
+
+    /** \brief  Get an output
+
+        \identifier{28i} */
+    Matrix<Scalar> get_output(casadi_int oind) const;
 
     /** \brief Construct a sparse matrix from triplet form
 
@@ -1098,6 +1140,31 @@ namespace casadi {
 
         \identifier{19v} */
     bool is_constant() const;
+
+    /** \brief Check if function call
+
+        \identifier{28j} */
+    bool is_call() const;
+
+    /** \brief  Check if evaluation output
+
+        \identifier{28k} */
+    bool is_output() const;
+
+    /** \brief  Check if a multiple output node
+
+        \identifier{28l} */
+    bool has_output() const;
+
+    /** \brief Get the index of evaluation output - only valid when is_output() is true
+
+        \identifier{28m} */
+    casadi_int which_output() const;
+
+    /** \brief Get function - only valid when is_call() is true
+
+        \identifier{28n} */
+    Function which_function() const;
 
     /** \brief Check if the matrix is integer-valued
 
@@ -1300,6 +1367,10 @@ namespace casadi {
     /// \cond INTERNAL
     static Matrix<Scalar> _sym(const std::string& name, const Sparsity& sp);
     /// \endcond
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    static std::mutex& get_mutex_temp();
+#endif //CASADI_WITH_THREADSAFE_SYMBOLICS
 
   private:
     /// Sparsity of the matrix in a compressed column storage (CCS) format

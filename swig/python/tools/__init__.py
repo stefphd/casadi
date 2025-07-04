@@ -25,6 +25,7 @@
 
 from .graph import *
 from .bounds import *
+import os
 
 import sys
 if sys.version_info >= (3,0):
@@ -42,7 +43,12 @@ def loadAllCompiledPlugins():
   for k in CasadiMeta.plugins().split(";"):
     cls, name = k.split("::")
     print("Testing: ", cls, name)
-    if cls in ("Importer","XmlFile","Linsol"):
+    if "SKIP_" + name.upper() + "_TESTS" in os.environ:
+        print("Skipping")
+        continue
+    if cls in ("XmlFile"):
+      pass
+    elif cls in ("Importer","Linsol"):
       getattr(casadi,cls).load_plugin(name)
     else:
       getattr(casadi,'load_'+cls.lower())(name)

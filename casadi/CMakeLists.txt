@@ -138,6 +138,24 @@ add_custom_target(libs ALL DEPENDS ${CASADI_MODULES})
 
 # Main header files
 if(NOT SKIP_CONFIG_H_GENERATION)
+
+  # See issue #3831, RELOCATABILITY
+  set(CASADI_CMAKE_CXX_COMPILER ${CMAKE_CXX_COMPILER})
+  if(CASADI_CMAKE_CXX_COMPILER MATCHES "shims" OR RELOCATABLE)
+    get_filename_component(CASADI_CMAKE_CXX_COMPILER ${CMAKE_CXX_COMPILER} NAME)
+  endif()
+
+  if(RELOCATABLE)
+    set(CASADI_INSTALL_PREFIX "")
+  else()
+    set(CASADI_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
+  endif()
+
+  set(EXTRA_CXX_FLAGS_FROM_DEFS "")
+  foreach(DEF ${EXTRA_CXX_FLAGS_FROM_DEFS_LIST})
+    set(EXTRA_CXX_FLAGS_FROM_DEFS "${EXTRA_CXX_FLAGS_FROM_DEFS} ${DEF}")
+  endforeach()
+
   configure_file(config.h.cmake "${CMAKE_CURRENT_BINARY_DIR}/config.h" ESCAPE_QUOTES)
 endif()
 install(FILES casadi.hpp mem.h casadi_c.h "${CMAKE_CURRENT_BINARY_DIR}/config.h"

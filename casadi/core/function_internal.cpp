@@ -25,6 +25,7 @@
 
 #include "function_internal.hpp"
 #include "casadi_call.hpp"
+#include "call_sx.hpp"
 #include "casadi_misc.hpp"
 #include "global_options.hpp"
 #include "external.hpp"
@@ -42,6 +43,8 @@
 #include "integrator_impl.hpp"
 #include "external_impl.hpp"
 #include "fmu_function.hpp"
+#include "blazing_spline_impl.hpp"
+#include "filesystem_impl.hpp"
 
 #include <cctype>
 #include <typeinfo>
@@ -98,6 +101,7 @@ namespace casadi {
     enable_fd_op_ = false;
     print_in_ = false;
     print_out_ = false;
+    print_canonical_ = false;
     max_io_ = 10000;
     dump_in_ = false;
     dump_out_ = false;
@@ -112,6 +116,8 @@ namespace casadi {
     sz_res_per_ = 0;
     sz_iw_per_ = 0;
     sz_w_per_ = 0;
+
+    dump_count_ = 0;
   }
 
   ProtoFunction::~ProtoFunction() {
@@ -291,6 +297,10 @@ namespace casadi {
       {"print_out",
        {OT_BOOL,
         "Print numerical values of outputs [default: false]"}},
+      {"print_canonical",
+        {OT_BOOL,
+        "When printing numerical matrices, use a format that is "
+        "exact and reproducible in generated C code."}},
       {"max_io",
        {OT_INT,
         "Acceptable number of inputs and outputs. Warn if exceeded."}},
@@ -406,6 +416,7 @@ namespace casadi {
     opts["fd_method"] = fd_method_;
     opts["print_in"] = print_in_;
     opts["print_out"] = print_out_;
+    opts["print_canonical"] = print_canonical_;
     opts["max_io"] = max_io_;
     opts["dump_in"] = dump_in_;
     opts["dump_out"] = dump_out_;
@@ -421,6 +432,8 @@ namespace casadi {
       print_in_ = option_value;
     } else if (option_name == "print_out") {
       print_out_ = option_value;
+    } else if (option_name == "print_canonical") {
+      print_canonical_ = option_value;
     } else if (option_name=="ad_weight") {
       ad_weight_ = option_value;
     } else if (option_name=="ad_weight_sp") {
@@ -502,6 +515,8 @@ namespace casadi {
         print_in_ = op.second;
       } else if (op.first=="print_out") {
         print_out_ = op.second;
+      } else if (op.first=="print_canonical") {
+        print_canonical_ = op.second;
       } else if (op.first=="max_io") {
         max_io_ = op.second;
       } else if (op.first=="dump_in") {
@@ -725,8 +740,8 @@ namespace casadi {
 
   void FunctionInternal::generate_in(const std::string& fname, const double** arg) const {
     // Set up output stream
-    std::ofstream of(fname);
-    casadi_assert(of.good(), "Error opening stream '" + fname + "'.");
+    std::ofstream of;
+    Filesystem::open(of, fname);
     normalized_setup(of);
 
     // Encode each input
@@ -741,8 +756,8 @@ namespace casadi {
 
   void FunctionInternal::generate_out(const std::string& fname, double** res) const {
     // Set up output stream
-    std::ofstream of(fname);
-    casadi_assert(of.good(), "Error opening stream '" + fname + "'.");
+    std::ofstream of;
+    Filesystem::open(of, fname);
     normalized_setup(of);
 
     // Encode each input
@@ -782,9 +797,6 @@ namespace casadi {
   }
 
   casadi_int FunctionInternal::get_dump_id() const {
-#ifdef CASADI_WITH_THREAD
-    std::lock_guard<std::mutex> lock(dump_count_mtx_);
-#endif // CASADI_WITH_THREAD
     return dump_count_++;
   }
 
@@ -825,32 +837,72 @@ namespace casadi {
     }
   }
 
+  void FunctionInternal::print_canonical(std::ostream &stream, casadi_int sz, const double* nz) {
+    StreamStateGuard backup(stream);
+    normalized_setup(stream);
+    if (nz) {
+      stream << "[";
+      for (casadi_int i=0; i<sz; ++i) {
+        if (i>0) stream << ", ";
+        normalized_out(stream, nz[i]);
+      }
+      stream << "]";
+    } else {
+      stream << "NULL";
+    }
+  }
+
+  void FunctionInternal::print_canonical(std::ostream &stream,
+      const Sparsity& sp, const double* nz) {
+    print_canonical(stream, sp.nnz(), nz);
+  }
+
+  void FunctionInternal::print_canonical(std::ostream &stream, double a) {
+    StreamStateGuard backup(stream);
+    normalized_setup(stream);
+    normalized_out(stream, a);
+  }
+
   int FunctionInternal::
-  eval_gen(const double** arg, double** res, casadi_int* iw, double* w, void* mem) const {
+  eval_gen(const double** arg, double** res, casadi_int* iw, double* w, void* mem,
+      bool always_inline, bool never_inline) const {
     casadi_int dump_id = (dump_in_ || dump_out_ || dump_) ? get_dump_id() : 0;
     if (dump_in_) dump_in(dump_id, arg);
     if (dump_ && dump_id==0) dump();
     if (print_in_) print_in(uout(), arg, false);
     auto m = static_cast<ProtoFunctionMemory*>(mem);
 
+    // Avoid memory corruption
+    for (casadi_int i=0;i<n_in_;++i) {
+      casadi_assert(arg[i]==0 || arg[i]+nnz_in(i)<=w || arg[i]>=w+sz_w(),
+        "Memory corruption detected for input " + name_in_[i] + ".\n"+
+        "arg[" + str(i) + "] " + str(arg[i]) + "-" + str(arg[i]+nnz_in(i)) +
+        " intersects with w " + str(w)+"-"+str(w+sz_w())+".");
+    }
+    for (casadi_int i=0;i<n_out_;++i) {
+      casadi_assert(res[i]==0 || res[i]+nnz_out(i)<=w || res[i]>=w+sz_w(),
+        "Memory corruption detected for output " + name_out_[i]);
+    }
     // Reset statistics
     for (auto&& s : m->fstats) s.second.reset();
     if (m->t_total) m->t_total->tic();
     int ret;
     if (eval_) {
-      int mem = 0;
+      auto m = static_cast<FunctionMemory*>(mem);
+      m->stats_available = true;
+      int mem_ = 0;
       if (checkout_) {
 #ifdef CASADI_WITH_THREAD
     std::lock_guard<std::mutex> lock(mtx_);
 #endif //CASADI_WITH_THREAD
-        mem = checkout_();
+        mem_ = checkout_();
       }
-      ret = eval_(arg, res, iw, w, mem);
+      ret = eval_(arg, res, iw, w, mem_);
       if (release_) {
 #ifdef CASADI_WITH_THREAD
     std::lock_guard<std::mutex> lock(mtx_);
 #endif //CASADI_WITH_THREAD
-        release_(mem);
+        release_(mem_);
       }
     } else {
       ret = eval(arg, res, iw, w, mem);
@@ -954,44 +1006,38 @@ namespace casadi {
   Dict FunctionInternal::cache() const {
     // Return value
     Dict ret;
-    // Add all Function instances that haven't been deleted
-    for (auto&& cf : cache_) {
-      if (cf.second.alive()) {
-        // Get the name of the key
-        std::string s = cf.first;
-        casadi_assert_dev(s.size() > 0);
-        // Replace ':' with '_'
-        std::replace(s.begin(), s.end(), ':', '_');
-        // Remove trailing underscore, if any
-        if (s.back() == '_') s.resize(s.size() - 1);
-        // Add entry to function return
-        ret[s] = shared_cast<Function>(cf.second.shared());
-      }
+
+    // Retrieve all Function instances that haven't been deleted
+    std::vector<std::string> keys;
+    std::vector<Function> entries;
+    cache_.cache(keys, entries);
+
+    for (size_t i=0; i<keys.size(); ++i) {
+      // Get the name of the key
+      std::string s = keys[i];
+      casadi_assert_dev(s.size() > 0);
+      // Replace ':' with '_'
+      std::replace(s.begin(), s.end(), ':', '_');
+      // Remove trailing underscore, if any
+      if (s.back() == '_') s.resize(s.size() - 1);
+      // Add entry to function return
+      ret[s] = entries[i];
     }
+
     return ret;
   }
 
   bool FunctionInternal::incache(const std::string& fname, Function& f,
       const std::string& suffix) const {
-    auto it = cache_.find(fname + ":" + suffix);
-    if (it!=cache_.end() && it->second.alive()) {
-      f = shared_cast<Function>(it->second.shared());
-      return true;
-    } else {
-      return false;
-    }
+    return cache_.incache(fname + ":" + suffix, f);
   }
 
   void FunctionInternal::tocache(const Function& f, const std::string& suffix) const {
-    // Add to cache
-    cache_.insert(std::make_pair(f.name() + ":" + suffix, f));
-    // Remove a lost reference, if any, to prevent uncontrolled growth
-    for (auto it = cache_.begin(); it!=cache_.end(); ++it) {
-      if (!it->second.alive()) {
-        cache_.erase(it);
-        break; // just one dead reference is enough
-      }
-    }
+    cache_.tocache(f.name() + ":" + suffix, f);
+  }
+
+  void FunctionInternal::tocache_if_missing(Function& f, const std::string& suffix) const {
+    cache_.tocache_if_missing(f.name() + ":" + suffix, f);
   }
 
   Function FunctionInternal::map(casadi_int n, const std::string& parallelization) const {
@@ -1004,7 +1050,7 @@ namespace casadi {
         f = Map::create(parallelization, self(), n);
         casadi_assert_dev(f.name()==fname);
         // Save in cache
-        tocache(f);
+        tocache_if_missing(f);
       }
     } else {
       // Non-serial maps are not cached
@@ -1048,7 +1094,7 @@ namespace casadi {
       std::vector<MX> res = self()(arg);
       f = Function(fname, arg, res, name_in_, name_out_, opts);
       // Save in cache
-      tocache(f);
+      tocache_if_missing(f);
     }
     return f;
   }
@@ -1776,6 +1822,11 @@ namespace casadi {
 
   Sparsity FunctionInternal::get_jac_sparsity(casadi_int oind, casadi_int iind,
       bool symmetric) const {
+    if (symmetric) {
+      casadi_assert(sparsity_out_[oind].is_dense(),
+        "Symmetry exploitation in Jacobian assumes dense expression. "
+        "A potential workaround is to apply densify().");
+    }
     // Check if we are able to propagate dependencies through the function
     if (has_spfwd() || has_sprev()) {
       // Get weighting factor
@@ -1846,6 +1897,10 @@ namespace casadi {
 
   Sparsity& FunctionInternal::jac_sparsity(casadi_int oind, casadi_int iind, bool compact,
       bool symmetric) const {
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    // Safe access to jac_sparsity_
+    std::lock_guard<std::mutex> lock(jac_sparsity_mtx_);
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
     // If first call, allocate cache
     for (bool c : {false, true}) {
       if (jac_sparsity_[c].empty()) jac_sparsity_[c].resize(n_in_ * n_out_);
@@ -2009,8 +2064,16 @@ namespace casadi {
   }
 
   int FunctionInternal::
-  eval_sx(const SXElem** arg, SXElem** res, casadi_int* iw, SXElem* w, void* mem) const {
-    casadi_error("'eval_sx' not defined for " + class_name());
+  eval_sx(const SXElem** arg, SXElem** res, casadi_int* iw, SXElem* w, void* mem,
+    bool always_inline, bool never_inline) const {
+
+    always_inline = always_inline || always_inline_;
+    never_inline = never_inline || never_inline_;
+
+    casadi_assert(!always_inline, "'eval_sx' not defined for " + class_name() +
+    " in combination with always_inline true");
+
+    return CallSX::eval_sx(self(), arg, res);
   }
 
   std::string FunctionInternal::diff_prefix(const std::string& prefix) const {
@@ -2105,7 +2168,7 @@ namespace casadi {
       casadi_assert_dev(f.n_out()==n_out_);
       for (i=0; i<n_out_; ++i) f.assert_sparsity_out(i, sparsity_out(i), nfwd);
       // Save to cache
-      tocache(f);
+      tocache_if_missing(f);
     }
     return f;
   }
@@ -2150,7 +2213,7 @@ namespace casadi {
       casadi_assert_dev(f.n_out()==n_in_);
       for (i=0; i<n_in_; ++i) f.assert_sparsity_out(i, sparsity_in(i), nadj);
       // Save to cache
-      tocache(f);
+      tocache_if_missing(f);
     }
     return f;
   }
@@ -2263,7 +2326,7 @@ namespace casadi {
       casadi_assert(f.n_out() == onames.size(),
         "Mismatching output signature, expected " + str(onames));
       // Save to cache
-      tocache(f);
+      tocache_if_missing(f);
     }
     return f;
   }
@@ -2457,19 +2520,15 @@ namespace casadi {
     // Codegen sparsities
     codegen_sparsities(g);
 
-    // Determine work vector size
-    casadi_int sz_w_codegen = sz_w();
-    if (is_a("SXFunction", true) && !g.avoid_stack()) sz_w_codegen = 0;
-
     // Function that returns work vector lengths
     g << g.declare(
         "int " + name_ + "_work(casadi_int *sz_arg, casadi_int* sz_res, "
         "casadi_int *sz_iw, casadi_int *sz_w)")
       << " {\n"
-      << "if (sz_arg) *sz_arg = " << sz_arg() << ";\n"
-      << "if (sz_res) *sz_res = " << sz_res() << ";\n"
-      << "if (sz_iw) *sz_iw = " << sz_iw() << ";\n"
-      << "if (sz_w) *sz_w = " << sz_w_codegen << ";\n"
+      << "if (sz_arg) *sz_arg = " << codegen_sz_arg(g) << ";\n"
+      << "if (sz_res) *sz_res = " << codegen_sz_res(g) << ";\n"
+      << "if (sz_iw) *sz_iw = " << codegen_sz_iw(g) << ";\n"
+      << "if (sz_w) *sz_w = " << codegen_sz_w(g) << ";\n"
       << "return 0;\n"
       << "}\n\n";
 
@@ -2478,20 +2537,20 @@ namespace casadi {
         "int " + name_ + "_work_bytes(casadi_int *sz_arg, casadi_int* sz_res, "
         "casadi_int *sz_iw, casadi_int *sz_w)")
       << " {\n"
-      << "if (sz_arg) *sz_arg = " << sz_arg() << "*sizeof(const casadi_real*);\n"
-      << "if (sz_res) *sz_res = " << sz_res() << "*sizeof(casadi_real*);\n"
-      << "if (sz_iw) *sz_iw = " << sz_iw() << "*sizeof(casadi_int);\n"
-      << "if (sz_w) *sz_w = " << sz_w_codegen << "*sizeof(casadi_real);\n"
+      << "if (sz_arg) *sz_arg = " << codegen_sz_arg(g) << "*sizeof(const casadi_real*);\n"
+      << "if (sz_res) *sz_res = " << codegen_sz_res(g) << "*sizeof(casadi_real*);\n"
+      << "if (sz_iw) *sz_iw = " << codegen_sz_iw(g) << "*sizeof(casadi_int);\n"
+      << "if (sz_w) *sz_w = " << codegen_sz_w(g) << "*sizeof(casadi_real);\n"
       << "return 0;\n"
       << "}\n\n";
 
     // Also add to header file to allow getting
      if (g.with_header) {
       g.header
-        << "#define " << name_ << "_SZ_ARG " << sz_arg() << "\n"
-        << "#define " << name_ << "_SZ_RES " << sz_res() << "\n"
-        << "#define " << name_ << "_SZ_IW " << sz_iw() << "\n"
-        << "#define " << name_ << "_SZ_W " << sz_w() << "\n";
+        << "#define " << name_ << "_SZ_ARG " << codegen_sz_arg(g) << "\n"
+        << "#define " << name_ << "_SZ_RES " << codegen_sz_res(g) << "\n"
+        << "#define " << name_ << "_SZ_IW " << codegen_sz_iw(g) << "\n"
+        << "#define " << name_ << "_SZ_W " << codegen_sz_w(g) << "\n";
      }
 
     // Which inputs are differentiable
@@ -2803,6 +2862,19 @@ namespace casadi {
     sz_w = this->sz_w();
   }
 
+  size_t FunctionInternal::codegen_sz_arg(const CodeGenerator& g) const {
+    return sz_arg();
+  }
+  size_t FunctionInternal::codegen_sz_res(const CodeGenerator& g) const {
+    return sz_res();
+  }
+  size_t FunctionInternal::codegen_sz_iw(const CodeGenerator& g) const {
+    return sz_iw();
+  }
+  size_t FunctionInternal::codegen_sz_w(const CodeGenerator& g) const {
+    return sz_w();
+  }
+
   void FunctionInternal::alloc_arg(size_t sz_arg, bool persistent) {
     if (persistent) {
       sz_arg_per_ += sz_arg;
@@ -2854,6 +2926,15 @@ namespace casadi {
       stats["t_wall_" +s.first] = s.second.t_wall;
       stats["t_proc_" +s.first] = s.second.t_proc;
     }
+    return stats;
+  }
+
+  Dict FunctionInternal::get_stats(void* mem) const {
+    Dict stats = ProtoFunction::get_stats(mem);
+    auto m = static_cast<FunctionMemory*>(mem);
+    casadi_assert(m->stats_available,
+      "No stats available: Function '" + name_ + "' not set up. "
+      "To get statistics, first evaluate it numerically.");
     return stats;
   }
 
@@ -3240,6 +3321,11 @@ namespace casadi {
     return type == "FunctionInternal";
   }
 
+  void FunctionInternal::merge(const std::vector<MX>& arg,
+    std::vector<MX>& subs_from, std::vector<MX>& subs_to) const {
+    return;
+  }
+
   std::vector<MX> FunctionInternal::free_mx() const {
     casadi_error("'free_mx' only defined for 'MXFunction'");
   }
@@ -3416,6 +3502,8 @@ namespace casadi {
                                casadi_int* iw, double* w) const {
     set_work(mem, arg, res, iw, w);
     set_temp(mem, arg, res, iw, w);
+    auto m = static_cast<FunctionMemory*>(mem);
+    m->stats_available = true;
   }
 
   void ProtoFunction::clear_mem() {
@@ -3526,11 +3614,16 @@ namespace casadi {
     return mem_.at(ind);
   }
 
+  bool ProtoFunction::has_memory(int ind) const {
+    return ind<mem_.size();
+  }
+
   int ProtoFunction::checkout() const {
 #ifdef CASADI_WITH_THREAD
     std::lock_guard<std::mutex> lock(mtx_);
 #endif //CASADI_WITH_THREAD
     if (unused_.empty()) {
+      check_mem_count(mem_.size()+1);
       // Allocate a new memory object
       void* m = alloc_mem();
       mem_.push_back(m);
@@ -3618,6 +3711,10 @@ namespace casadi {
   }
 
   void FunctionInternal::set_jac_sparsity(casadi_int oind, casadi_int iind, const Sparsity& sp) {
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    // Safe access to jac_sparsity_
+    std::lock_guard<std::mutex> lock(jac_sparsity_mtx_);
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
     casadi_int ind = iind + oind * n_in_;
     jac_sparsity_[false].resize(n_in_ * n_out_);
     jac_sparsity_[false].at(ind) = sp;
@@ -3840,7 +3937,7 @@ namespace casadi {
 
   void FunctionInternal::serialize_body(SerializingStream& s) const {
     ProtoFunction::serialize_body(s);
-    s.version("FunctionInternal", 6);
+    s.version("FunctionInternal", 7);
     s.pack("FunctionInternal::is_diff_in", is_diff_in_);
     s.pack("FunctionInternal::is_diff_out", is_diff_out_);
     s.pack("FunctionInternal::sp_in", sparsity_in_);
@@ -3894,6 +3991,7 @@ namespace casadi {
     s.pack("FunctionInternal::fd_method", fd_method_);
     s.pack("FunctionInternal::print_in", print_in_);
     s.pack("FunctionInternal::print_out", print_out_);
+    s.pack("FunctionInternal::print_canonical", print_canonical_);
     s.pack("FunctionInternal::max_io", max_io_);
     s.pack("FunctionInternal::dump_in", dump_in_);
     s.pack("FunctionInternal::dump_out", dump_out_);
@@ -3916,7 +4014,7 @@ namespace casadi {
   }
 
   FunctionInternal::FunctionInternal(DeserializingStream& s) : ProtoFunction(s) {
-    int version = s.version("FunctionInternal", 1, 6);
+    int version = s.version("FunctionInternal", 1, 7);
     s.unpack("FunctionInternal::is_diff_in", is_diff_in_);
     s.unpack("FunctionInternal::is_diff_out", is_diff_out_);
     s.unpack("FunctionInternal::sp_in", sparsity_in_);
@@ -3987,6 +4085,11 @@ namespace casadi {
     s.unpack("FunctionInternal::fd_method", fd_method_);
     s.unpack("FunctionInternal::print_in", print_in_);
     s.unpack("FunctionInternal::print_out", print_out_);
+    if (version >= 7) {
+      s.unpack("FunctionInternal::print_canonical", print_canonical_);
+    } else {
+      print_canonical_ = false;
+    }
     if (version >= 4) {
       s.unpack("FunctionInternal::max_io", max_io_);
     } else {
@@ -4023,6 +4126,7 @@ namespace casadi {
     eval_ = nullptr;
     checkout_ = nullptr;
     release_ = nullptr;
+    dump_count_ = 0;
   }
 
   void ProtoFunction::serialize(SerializingStream& s) const {
@@ -4060,6 +4164,7 @@ namespace casadi {
     {"External", External::deserialize},
     {"Conic", Conic::deserialize},
     {"FmuFunction", FmuFunction::deserialize},
+    {"BlazingSplineFunction", BlazingSplineFunction::deserialize}
   };
 
 } // namespace casadi

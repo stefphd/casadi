@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.10.2)
 project(casadi C CXX)
 
 set(CASADI_MAJOR_VERSION 3)
-set(CASADI_MINOR_VERSION 6)
-set(CASADI_PATCH_VERSION 5)
+set(CASADI_MINOR_VERSION 7)
+set(CASADI_PATCH_VERSION 0)
 set(CASADI_IS_RELEASE 0)
 
 set(CASADI_VERSION ${CASADI_MAJOR_VERSION}.${CASADI_MINOR_VERSION}.${CASADI_PATCH_VERSION})
@@ -45,6 +45,11 @@ if(POLICY CMP0054)
   cmake_policy(SET CMP0054 NEW)
 endif()
 
+# FindPythonInterp and FindPythonLibs should be replaced by FindPython3
+if(POLICY CMP0148)
+  cmake_policy(SET CMP0148 OLD)
+endif()
+
 #############################################################
 ########################## Version ##########################
 #############################################################
@@ -84,23 +89,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type (default Release)" FORCE)
 endif()
 
-########################################################################
-############################# Fortran ##################################
-########################################################################
-option(FORTRAN_REQUIRED "Make fortran a required dependency" OFF)
-
-# http://public.kitware.com/Bug/print_bug_page.php?bug_id=9220
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
-include(language_support)
-workaround_9220(Fortran Fortran_language_works)
-if(FORTRAN_REQUIRED)
-  enable_language(Fortran)
-  set(Fortran_language_works ON)
-else()
-  if(Fortran_language_works)
-    enable_language(Fortran OPTIONAL)
-  endif()
-endif()
 
 ########################################################################
 ############################# C++11 ####################################
@@ -204,24 +193,52 @@ set(DEPENDENT_LIBRARIES)
 
 include(ExternalProject)
 
+set(EXTERNAL_PROJECT_CFLAGS "")
+set(EXTERNAL_PROJECT_CXXFLAGS "")
+set(EXTERNAL_PROJECT_FFLAGS "")
+set(EXTERNAL_PROJECT_FCFLAGS "")
 
 set(CROSS_FLAGS_CONFIGURE "")
 set(CROSS_FLAGS_C "")
 set(CROSS_FLAGS_FORTRAN "")
+set(CROSS_FLAGS_RUST "")
 set(CROSS_FLAGS_CMAKE)
+set(CROSS_TARGET_RUST "")
 
 if(CMAKE_CROSS_COMPILING OR DEFINED ENV{CROSS_TRIPLE})
   set(CROSS_FLAGS_CONFIGURE "--host=$ENV{CROSS_TRIPLE}")
   if("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "aarch64")
     # See issue https://github.com/casadi/casadi/issues/2887
-    set(CROSS_FLAGS_CONFIGURE ${CROSS_FLAGS_CONFIGURE} "ADD_CXXFLAGS=-Wl,--unresolved-symbols=ignore-all")
+    set(EXTERNAL_PROJECT_CXXFLAGS "${EXTERNAL_PROJECT_CXXFLAGS} -Wl,--unresolved-symbols=ignore-all")
     set(EXTRA_CASADI_CXX_FLAGS "-Wl,--unresolved-symbols=ignore-all")
     set(EXTRA_CASADI_C_FLAGS "-Wl,--unresolved-symbols=ignore-all")
     #set(CROSS_FLAGS_CMAKE ${CROSS_FLAGS_CMAKE} "-DCMAKE_EXE_LINKER_FLAGS_INIT=--unresolved-symbols=ignore-all")
+    set(CROSS_TARGET_RUST aarch64-unknown-linux-gnu)
+    set(CROSS_FLAGS_RUST "${CROSS_FLAGS_RUST};--target=${CROSS_TARGET_RUST}")
   endif()
   if("$ENV{CROSS_TRIPLE}" MATCHES "mingw32")
     # https://github.com/casadi/artifacts/issues/3
     set(CROSS_FLAGS_FORTRAN "lt_cv_deplibs_check_method=pass_all")
+    set(CROSS_TARGET_RUST x86_64-pc-windows-gnu)
+    set(CROSS_FLAGS_RUST "${CROSS_FLAGS_RUST};--target=${CROSS_TARGET_RUST}")
+  endif()
+endif()
+
+
+
+if(APPLE)
+  if(CMAKE_OSX_SYSROOT)
+    set(EXTERNAL_PROJECT_CFLAGS "${EXTERNAL_PROJECT_CFLAGS} -isysroot ${CMAKE_OSX_SYSROOT}")
+    set(EXTERNAL_PROJECT_CXXFLAGS "${EXTERNAL_PROJECT_CXXFLAGS} -isysroot ${CMAKE_OSX_SYSROOT}")
+    set(EXTERNAL_PROJECT_FFLAGS "${EXTERNAL_PROJECT_FFLAGS} -isysroot ${CMAKE_OSX_SYSROOT}")
+    set(EXTERNAL_PROJECT_FCFLAGS "${EXTERNAL_PROJECT_FCFLAGS} -isysroot ${CMAKE_OSX_SYSROOT}")
+  endif()
+
+  if(CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(EXTERNAL_PROJECT_CFLAGS "${EXTERNAL_PROJECT_CFLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    set(EXTERNAL_PROJECT_CXXFLAGS "${EXTERNAL_PROJECT_CXXFLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    set(EXTERNAL_PROJECT_FFLAGS "${EXTERNAL_PROJECT_FFLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    set(EXTERNAL_PROJECT_FCFLAGS "${EXTERNAL_PROJECT_FCFLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
   endif()
 endif()
 
@@ -266,6 +283,7 @@ option(WITH_OCTAVE "Compile the Octave front-end (experimental)" OFF)
 option(WITH_JSON "Compile the JSON front-end" OFF)
 option(WITH_OCTAVE_IMPORT "[DEPRECATED] Copy import.m file to install directory" OFF)
 option(WITH_PYTHON3 "Use Python 3.*" OFF)
+option(WITH_PYTHON_GIL_RELEASE "Create Python bindings that release the GIL" OFF)
 
 ############################################################
 ################# Misc options #############################
@@ -276,6 +294,7 @@ option(ENABLE_STATIC "Compile static libraries (.a on Linux)" OFF)
 option(ENABLE_SHARED "Compile shared libraries (.so on Linux)" ON)
 option(SWIG_EXPORT "Export SWIG" OFF)
 option(SWIG_IMPORT "Import SWIG" OFF)
+option(RELOCATABLE "Avoid any usage of absolute paths" ON)
 
 # enabling OpenMP support if requested
 option(WITH_OPENMP "Compile with parallelization support using OpenMP" OFF)
@@ -290,9 +309,6 @@ endif()
 # enabling Threads support if requested
 option(WITH_THREAD "Compile with parallelization support using POSIX Threads" OFF)
 option(WITH_THREAD_MINGW "For MINGW, use mingw-std-threads" OFF)
-if(WITH_THREAD)
-  add_definitions(-DCASADI_WITH_THREAD)
-endif()
 if(MINGW AND WITH_THREAD_MINGW)
   add_definitions(-DCASADI_WITH_THREAD_MINGW)
 else()
@@ -301,6 +317,11 @@ else()
   endif()
 endif()
 
+option(WITH_THREADSAFE_SYMBOLICS "Numeric evaluation in CasADi is thread-safe. Use this flag to make symbolics thread-safe as well. May adversly impact performance" ${WITH_THREAD})
+
+if(WITH_THREADSAFE_SYMBOLICS AND NOT WITH_THREAD)
+  message(SEND_ERROR "WITH_THREADSAFE_SYMBOLICS ON only supported when WITH_THREAD ON." )
+endif()
 
 # OpenCL
 option(WITH_OPENCL "Compile with OpenCL support (experimental)" OFF)
@@ -338,17 +359,48 @@ option(WITH_COPYSIGN_UNDEF "On Windows, in Python.h #defines copysign to be _cop
 ############################################################
 # Flat hierarchy if self-contained and on Windows
 option(WITH_SELFCONTAINED "Make the install directory self-contained" OFF)
+
+if(DEFINED CMAKE_INSTALL_LIBDIR)
+  set(DEF_LIB_PREFIX ${CMAKE_INSTALL_LIBDIR})
+else()
+  if(WITH_SELFCONTAINED OR (WIN32 AND NOT CYGWIN))
+    set(DEF_LIB_PREFIX casadi)
+  else()
+    set(DEF_LIB_PREFIX lib)
+  endif()
+endif()
+if(DEFINED CMAKE_INSTALL_BINDIR)
+  set(DEF_BIN_PREFIX ${CMAKE_INSTALL_BINDIR})
+else()
+  if(WITH_SELFCONTAINED OR (WIN32 AND NOT CYGWIN))
+    set(DEF_BIN_PREFIX casadi)
+  else()
+    set(DEF_BIN_PREFIX bin)
+  endif()
+endif()
+if(DEFINED CMAKE_INSTALL_INCLUDEDIR)
+  set(DEF_INCLUDE_PREFIX ${CMAKE_INSTALL_INCLUDEDIR})
+else()
+  if(WITH_SELFCONTAINED OR (WIN32 AND NOT CYGWIN))
+    set(DEF_INCLUDE_PREFIX casadi/include)
+  else()
+    set(DEF_INCLUDE_PREFIX include)
+  endif()
+endif()
+if(DEFINED CMAKE_PREFIX_RELATIVE)
+  set(DEF_CMAKE_PREFIX ${CMAKE_PREFIX_RELATIVE})
+else()
+  if(WITH_SELFCONTAINED OR (WIN32 AND NOT CYGWIN))
+    set(DEF_CMAKE_PREFIX casadi/cmake)
+  else()
+    set(DEF_CMAKE_PREFIX ${DEF_LIB_PREFIX}/cmake/casadi)
+  endif()
+endif()
+
 if(WITH_SELFCONTAINED OR (WIN32 AND NOT CYGWIN))
-  set(DEF_LIB_PREFIX casadi)
-  set(DEF_BIN_PREFIX casadi)
-  set(DEF_CMAKE_PREFIX casadi/cmake)
   set(DEF_PYTHON_PREFIX) # Note: Files installed in a casadi subdirectory
   set(DEF_MATLAB_PREFIX casadi)
-  set(DEF_INCLUDE_PREFIX casadi/include)
 else()
-  set(DEF_LIB_PREFIX lib)
-  set(DEF_BIN_PREFIX bin)
-  set(DEF_CMAKE_PREFIX lib/cmake/casadi)
   set(DEF_PYTHON_PREFIX python)
   if (WITH_PYTHON)
     set(PYTHON_VERSION_REQ "")
@@ -361,7 +413,6 @@ else()
     set(DEF_PYTHON_PREFIX ${PYTHON_SITE_PACKAGES})
   endif()
   set(DEF_MATLAB_PREFIX matlab)
-  set(DEF_INCLUDE_PREFIX include)
 endif()
 
 # Installation directories are cache entries that can be modified
@@ -373,9 +424,8 @@ set(PYTHON_PREFIX ${DEF_PYTHON_PREFIX} CACHE PATH "Installation directory for Py
 set(MATLAB_PREFIX ${DEF_MATLAB_PREFIX} CACHE PATH "Installation directory for MATLAB/Octave files")
 
 
-install(DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/bin/" OPTIONAL DESTINATION ${LIB_PREFIX})
+install(DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/bin/" OPTIONAL DESTINATION ${BIN_PREFIX} USE_SOURCE_PERMISSIONS)
 install(DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/lib/" OPTIONAL DESTINATION ${LIB_PREFIX})
-install(DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/lib64/" OPTIONAL DESTINATION ${LIB_PREFIX})
 if(CMAKE_CROSS_COMPILING)
   install(DIRECTORY ${CMAKE_FIND_ROOT_PATH}/bin/ DESTINATION ${LIB_PREFIX} FILES_MATCHING PATTERN "*${CMAKE_SHARED_LIBRARY_SUFFIX}")
 endif()
@@ -422,8 +472,8 @@ option(WITH_EXTRA_WARNINGS "Add extra warnings (like -Wall -Wextra)" OFF)
 option(WITH_WERROR "Add -Werror" OFF)
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
   if(WITH_EXTRA_WARNINGS)
-    set(EXTRA_CASADI_CXX_FLAGS "${EXTRA_CASADI_CXX_FLAGS} -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-attributes")
-    set(EXTRA_CASADI_C_FLAGS "${EXTRA_CASADI_C_FLAGS} -Wall -Wextra -Wformat-security -Wno-unused-parameter -Wno-maybe-uninitialized -Wno-unused-but-set-variable -Wno-unused-function -Wno-unused-value")
+    set(EXTRA_CASADI_CXX_FLAGS "${EXTRA_CASADI_CXX_FLAGS} -Wall -Wextra -Wno-deprecated-enum-enum-conversion -Wno-unused-parameter -Wno-sign-compare -Wno-attributes")
+    set(EXTRA_CASADI_C_FLAGS "${EXTRA_CASADI_C_FLAGS} -Wall -Wextra -Wno-deprecated-enum-enum-conversion -Wformat-security -Wno-unused-parameter -Wno-maybe-uninitialized -Wno-unused-but-set-variable -Wno-unused-function -Wno-unused-value")
   endif()
   if(WITH_WERROR)
     set(EXTRA_CASADI_CXX_FLAGS "${EXTRA_CASADI_CXX_FLAGS} -Werror")
@@ -432,8 +482,8 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
 
 elseif("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
   if(WITH_EXTRA_WARNINGS)
-    set(EXTRA_CASADI_CXX_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-mismatched-tags -Wno-tautological-compare")
-    set(EXTRA_CASADI_C_FLAGS "-Wall -Wextra -Wformat-security -Wno-unused-parameter -Wno-unused-function -Wno-unused-value")
+    set(EXTRA_CASADI_CXX_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-mismatched-tags -Wno-tautological-compare -Wno-unknown-warning-option -Wno-vla-cxx-extension")
+    set(EXTRA_CASADI_C_FLAGS "-Wall -Wextra -Wformat-security -Wno-unused-parameter -Wno-unused-function -Wno-unused-value -Wno-unknown-warning-option -Wno-vla-cxx-extension")
   endif()
   if(WITH_WERROR)
     set(EXTRA_CASADI_CXX_FLAGS "${EXTRA_CASADI_CXX_FLAGS} -Werror")
@@ -521,6 +571,13 @@ if(WITH_FMI2)
 endif()
 add_feature_info(dynamic-loading WITH_FMI2 "Support for import of FMI 2.0 binaries")
 
+# Support for import of FMI 3.0 binaries
+option(WITH_FMI3 "Compile with support for import of FMI 3.0 binaries" ON)
+if(WITH_FMI3)
+  set(FMI3_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/external_packages/FMI-Standard-3.0/headers)
+endif()
+add_feature_info(dynamic-loading WITH_FMI3 "Support for import of FMI 3.0 binaries")
+
 # Include support for deprecated features (to be removed in the next release)
 option(WITH_DEPRECATED_FEATURES "Compile with syntax that is scheduled to be deprecated" ON)
 if (WITH_DEPRECATED_FEATURES)
@@ -533,6 +590,10 @@ include_directories(${PROJECT_BINARY_DIR})
 #######################################################################
 ################# 3rd party interface #################################
 #######################################################################
+
+set(AUTOTOOLS_SHELL "bash" CACHE STRING "When dependency is asked to be built and relies on autotools, use this shell")
+
+option(WITH_MATLAB_IPC "Compile the MATLAB IPC interface" OFF)
 
 option(WITH_BUILD_REQUIRED "Build any requirements that are not found on your system")
 
@@ -569,43 +630,66 @@ add_feature_info(csparse-interface WITH_CSPARSE "Interface to the sparse direct 
 
 # BLASFEO
 option(WITH_BLASFEO "Compile the interface to BLASFEO" OFF)
-set(BUILD_BLASFEO_VERSION "edf92b396adddd9e548b9786f87ad290a0971329" CACHE STRING "Tag/branch/hash to be used for BUILD_BLASFEO_GIT_REPO")
-set(BUILD_BLASFEO_GIT_REPO "https://github.com/giaf/blasfeo.git" CACHE STRING "Git repo used together with BUILD_BLASFEO_VERSION")
+set(BUILD_BLASFEO_VERSION "14d6e66f0662182a8dd02ddc7ec4738738c6344d" CACHE STRING "Tag/branch/hash to be used for BUILD_BLASFEO_GIT_REPO")
+set(BUILD_BLASFEO_GIT_REPO "https://github.com/jgillis/blasfeo.git" CACHE STRING "Git repo used together with BUILD_BLASFEO_VERSION")
+set(BUILD_BLASFEO_GIT_SHALLOW OFF CACHE BOOL "Use shallow clone for BLASFEO")
 option(WITH_BUILD_BLASFEO "Build BLASFEO (BUILD_BLASFEO_VERSION=${BUILD_BLASFEO_VERSION}) from downloaded source (BUILD_BLASFEO_GIT_REPO=${BUILD_BLASFEO_GIT_REPO})." OFF)
 
 # HPIPM
 option(WITH_HPIPM "Compile the interface to HPIPM" OFF)
 set(BUILD_HPIPM_VERSION "0e0c9f4e0d4081dceafa9b37c396db50bce0e81a" CACHE STRING "Tag/branch/hash to be used for BUILD_HPIPM_GIT_REPO")
 set(BUILD_HPIPM_GIT_REPO "https://github.com/jgillis/hpipm.git" CACHE STRING "Git repo used together with BUILD_HPIPM_VERSION")
+set(BUILD_HPIPM_GIT_SHALLOW OFF CACHE BOOL "Use shallow clone for HPIPM")
 option(WITH_BUILD_HPIPM "Build HPIPM (BUILD_HPIPM_VERSION=${BUILD_HPIPM_VERSION}) from downloaded source (BUILD_HPIPM_GIT_REPO=${BUILD_HPIPM_GIT_REPO})." OFF)
 set(BUILD_HPIPM_DEPENDENCIES BLASFEO)
 
 # FATROP
 option(WITH_FATROP "Compile the interface to FATROP" OFF)
-set(BUILD_FATROP_VERSION "42e3fee797e8685f1b0b12a692890277a1fc4e2d" CACHE STRING "Tag/branch/hash to be used for BUILD_FATROP_GIT_REPO")
-set(BUILD_FATROP_GIT_REPO "https://gitlab.kuleuven.be/robotgenskill/fatrop/fatrop.git" CACHE STRING "Git repo used together with BUILD_FATROP_VERSION")
+set(BUILD_FATROP_VERSION "v0.0.4.post1" CACHE STRING "Tag/branch/hash to be used for BUILD_FATROP_GIT_REPO")
+set(BUILD_FATROP_GIT_REPO "https://github.com/meco-group/fatrop.git" CACHE STRING "Git repo used together with BUILD_FATROP_VERSION")
+set(BUILD_FATROP_GIT_SHALLOW OFF CACHE BOOL "Use shallow clone for FATROP")
 option(WITH_BUILD_FATROP "Build FATROP (BUILD_FATROP_VERSION=${BUILD_FATROP_VERSION}) from downloaded source (BUILD_FATROP_GIT_REPO=${BUILD_FATROP_GIT_REPO})." OFF)
+set(BUILD_FATROP_DEPENDENCIES BLASFEO)
 
 # SuperSCS: An conic solver
 option(WITH_SUPERSCS "Compile the interface to SuperSCS (the source code for SuperSCS is included)" ${WITH_SUPERSCS_DEF})
 set(BUILD_SUPERSCS_VERSION "4d2d1bd03ed4cf93e684a880b233760ce34ca69c" CACHE STRING "Tag/branch/hash to be used for BUILD_SUPERSCS_GIT_REPO")
 set(BUILD_SUPERSCS_GIT_REPO "https://github.com/jgillis/scs.git" CACHE STRING "Git repo used together with BUILD_SUPERSCS_VERSION")
+set(BUILD_SUPERSCS_GIT_SHALLOW OFF CACHE BOOL "Use shallow clone for SUPERSCS")
 option(WITH_BUILD_SUPERSCS "Build SuperSCS (BUILD_SUPERSCS_VERSION=${BUILD_SUPERSCS_VERSION}) from downloaded source (BUILD_SUPERSCS_GIT_REPO=${BUILD_SUPERSCS_GIT_REPO})." OFF)
 add_feature_info(superscs-interface WITH_SUPERSCS "Interface to Conic solver SuperSCS.")
 
 # OSQP: An operator-splitting QP solver
 option(WITH_OSQP "Compile the interface to OSQP" OFF)
-set(BUILD_OSQP_VERSION "v0.6.2" CACHE STRING "Tag/branch/hash to be used for BUILD_OSQP_GIT_REPO")
+set(BUILD_OSQP_VERSION "v0.6.3" CACHE STRING "Tag/branch/hash to be used for BUILD_OSQP_GIT_REPO")
 set(BUILD_OSQP_GIT_REPO "https://github.com/osqp/osqp.git" CACHE STRING "Git repo used together with BUILD_OSQP_VERSION")
+set(BUILD_OSQP_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for OSQP")
 option(WITH_BUILD_OSQP "Build OSQP (BUILD_OSQP_VERSION=${BUILD_OSQP_VERSION}) from downloaded source (BUILD_OSQP_GIT_REPO=${BUILD_OSQP_GIT_REPO})." OFF)
 add_feature_info(osqp-interface WITH_OSQP "Interface to QP solver OSQP.")
 
+# Clarabel: Interior point QP solver
+option(WITH_CLARABEL "Compile the interface to Clarabel" OFF)
+set(BUILD_CLARABEL_VERSION "d6f2404903db791330f88b4f2ceded1e90696848" CACHE STRING "Tag/branch/hash to be used for BUILD_CLARABEL_GIT_REPO")
+set(BUILD_CLARABEL_GIT_REPO "https://github.com/jgillis/Clarabel.cpp.git" CACHE STRING "Git repo used together with BUILD_CLARABEL_VERSION")
+set(BUILD_CLARABEL_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for Clarabel")
+option(WITH_BUILD_CLARABEL "Build CLARABEL (BUILD_CLARABEL_VERSION=${BUILD_CLARABEL_VERSION}) from downloaded source (BUILD_CLARABEL_GIT_REPO=${BUILD_CLARABEL_GIT_REPO})." OFF)
+add_feature_info(clarabel-interface WITH_CLARABEL "Interface to QP solver CLARABEL.")
+
+option(WITH_RUMOCA "Compile the interface to rumoca" OFF)
+set(BUILD_RUMOCA_VERSION "main" CACHE STRING "Tag/branch/hash to be used for BUILD_RUMOCA_GIT_REPO")
+set(BUILD_RUMOCA_GIT_REPO "https://github.com/jgillis/rumoca.git" CACHE STRING "Git repo used together with BUILD_RUMOCA_VERSION")
+set(BUILD_RUMOCA_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for rumoca")
+option(WITH_BUILD_RUMOCA "Build RUMOCA (BUILD_RUMOCA_VERSION=${BUILD_RUMOCA_VERSION}) from downloaded source (BUILD_RUMOCA_GIT_REPO=${BUILD_RUMOCA_GIT_REPO})." OFF)
+add_feature_info(rumoca-interface WITH_RUMOCA "Interface to rumoca")
+
 set(BUILD_EIGEN3_VERSION "3.4.0" CACHE STRING "Tag/branch/hash to be used for BUILD_EIGEN3_GIT_REPO")
 set(BUILD_EIGEN3_GIT_REPO "https://gitlab.com/libeigen/eigen.git" CACHE STRING "Git repo used together with BUILD_EIGEN3_VERSION")
+set(BUILD_EIGEN3_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for EIGEN3")
 option(WITH_BUILD_EIGEN3 "Build Eigen (BUILD_EIGEN3_VERSION=${BUILD_EIGEN3_VERSION}) from downloaded source (BUILD_EIGEN3_GIT_REPO=${BUILD_EIGEN3_GIT_REPO})." OFF)
 
 set(BUILD_SIMDE_VERSION "v0.7.2" CACHE STRING "Tag/branch/hash to be used for BUILD_SIMDE_GIT_REPO")
 set(BUILD_SIMDE_GIT_REPO "https://github.com/simd-everywhere/simde.git" CACHE STRING "Git repo used together with BUILD_BLASFEO_VERSION")
+set(BUILD_SIMDE_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for SIMDE")
 option(WITH_BUILD_SIMDE "Build Simde (BUILD_SIMDE_VERSION=${BUILD_SIMDE_VERSION}) from downloaded source (BUILD_SIMDE_GIT_REPO=${BUILD_SIMDE_GIT_REPO})." OFF)
 
 
@@ -613,6 +697,7 @@ option(WITH_BUILD_SIMDE "Build Simde (BUILD_SIMDE_VERSION=${BUILD_SIMDE_VERSION}
 option(WITH_PROXQP "Compile the interface to PROXQP" OFF)
 set(BUILD_PROXQP_VERSION "v0.3.2" CACHE STRING "Tag/branch/hash to be used for BUILD_PROXQP_GIT_REPO")
 set(BUILD_PROXQP_GIT_REPO "https://github.com/Simple-Robotics/proxsuite.git" CACHE STRING "Git repo used together with BUILD_PROXQP_VERSION")
+set(BUILD_PROXQP_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for PROXQP")
 option(WITH_BUILD_PROXQP "Build PROXQP (BUILD_PROXQP_VERSION=${BUILD_PROXQP_VERSION}) from downloaded source (BUILD_PROXQP_GIT_REPO=${BUILD_PROXQP_GIT_REPO})." OFF)
 set(BUILD_PROXQP_DEPENDENCIES EIGEN3 SIMDE)
 
@@ -659,6 +744,7 @@ option(WITH_LAPACK "Compile the interface to LAPACK" ${WITH_LAPACK_DEF})
 option(WITH_BUILD_LAPACK "Download and install OpenBLAS for LAPACK+BLAS" OFF)
 set(BUILD_LAPACK_GIT_REPO https://github.com/xianyi/OpenBLAS.git  CACHE STRING "Git repo used together with BUILD_LAPACK_VERSION")
 set(BUILD_LAPACK_VERSION v0.3.21 CACHE STRING "Tag/branch/hash to be used for BUILD_LAPACK_GIT_REPO")
+set(BUILD_LAPACK_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for LAPACK")
 
 # qpOASES: An active-set QP solver
 option(WITH_QPOASES "Compile the interface to qpOASES (the source code for qpOASES is included)" ${WITH_QPOASES_DEF})
@@ -683,11 +769,13 @@ add_feature_info(blocksqp-interface WITH_BLOCKSQP "Interface to the NLP solver b
 
 set(BUILD_TRLIB_VERSION "c7632b8b14152e78bc21721a3bd1a2432586b824" CACHE STRING "Tag/branch/hash to be used for BUILD_TRLIB_GIT_REPO")
 set(BUILD_TRLIB_GIT_REPO "https://github.com/jgillis/trlib.git" CACHE STRING "Git repo used together with BUILD_TRLIB_VERSION")
+set(BUILD_TRLIB_GIT_SHALLOW OFF CACHE BOOL "Use shallow clone for TRLIB")
 option(WITH_BUILD_TRLIB "Build TRLIB (BUILD_TRLIB_VERSION=${BUILD_TRLIB_VERSION}) from downloaded source (BUILD_TRLIB_GIT_REPO=${BUILD_TRLIB_GIT_REPO})." OFF)
 
 # SLEQP: An active set-based NLP solver
 option(WITH_SLEQP "Compile the interface to SLEQP" OFF)
 set(BUILD_SLEQP_GIT_REPO "https://github.com/jgillis/sleqp.git" CACHE STRING "Git repo used together with BUILD_SLEQ_VERSION")
+set(BUILD_SLEQP_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for SLEQP")
 set(BUILD_SLEQP_VERSION "patch-1" CACHE STRING "Tag/branch/hash to be used for BUILD_SLEQ_GIT_REPO")
 option(WITH_BUILD_SLEQP "Build SLEQP (BUILD_SLEQP_VERSION=${BUILD_SLEQP_VERSION}) from downloaded source (BUILD_SLEQP_GIT_REPO=${BUILD_SLEQP_GIT_REPO})." OFF)
 set(BUILD_SLEQP_DEPENDENCIES HIGHS TRLIB MUMPS)
@@ -695,14 +783,18 @@ set(BUILD_SLEQP_DEPENDENCIES HIGHS TRLIB MUMPS)
 # IPOPT: A sparse interior point NLP solver with filter line-search
 option(WITH_IPOPT "Compile the interface to IPOPT" ${WITH_IPOPT_DEF})
 set(BUILD_IPOPT_GIT_REPO "https://github.com/jgillis/Ipopt-1.git" CACHE STRING "Git repo used together with BUILD_IPOPT_VERSION")
+set(BUILD_IPOPT_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for IPOPT")
 set(BUILD_IPOPT_VERSION "3.14.11.mod" CACHE STRING "Tag/branch/hash to be used for BUILD_IPOPT_GIT_REPO")
 option(WITH_BUILD_IPOPT "Build IPOPT (BUILD_IPOPT_VERSION=${BUILD_IPOPT_VERSION}) from downloaded source (BUILD_IPOPT_GIT_REPO=${BUILD_IPOPT_GIT_REPO})." OFF)
 set(BUILD_IPOPT_DEPENDENCIES MUMPS)
 
-
 option(WITH_MOCKUP_REQUIRED ON)
-set(BUILD_MOCKUPS_GIT_REPO https://github.com/casadi/mockups.git CACHE STRING "Git repo used together with BUILD_MOCKUPS_VERSION")
-set(BUILD_MOCKUPS_VERSION v65 CACHE STRING "Tag/branch/hash to be used for BUILD_MOCKUPS_GIT_REPO")
+set(BUILD_MOCKUPS_GIT_REPO "https://github.com/casadi/mockups.git" CACHE STRING "Git repo used together with BUILD_MOCKUPS_VERSION")
+set(BUILD_MOCKUPS_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for MOCKUPS")
+set(BUILD_MOCKUPS_VERSION "master" CACHE STRING "Tag/branch/hash to be used for BUILD_MOCKUPS_GIT_REPO")
+
+option(WITH_MADNLP "Compile the interface to MadNLP"  OFF)
+option(WITH_MOCKUP_MADNLP "Use mockup MadNLP (BUILD_MOCKUPS_VERSION=${BUILD_MOCKUPS_VERSION}) from downloaded source (BUILD_MOCKUPS_GIT_REPO=${BUILD_MOCKUPS_GIT_REPO})." OFF)
 
 # Knitro: An NLP solver
 option(WITH_KNITRO "Compile the interface to KNITRO" OFF)
@@ -727,7 +819,8 @@ option(WITH_MOCKUP_GUROBI "Use mockup GUROBI (BUILD_MOCKUPS_VERSION=${BUILD_MOCK
 
 # Bonmin: An MINLP solver
 option(WITH_BONMIN "Compile the interface to BONMIN" OFF)
-set(BUILD_BONMIN_GIT_REPO https://github.com/coin-or/Bonmin.git CACHE STRING "Git repo used together with BUILD_BONMIN_VERSION")
+set(BUILD_BONMIN_GIT_REPO "https://github.com/coin-or/Bonmin.git" CACHE STRING "Git repo used together with BUILD_BONMIN_VERSION")
+set(BUILD_BONMIN_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for BONMIN")
 set(BUILD_BONMIN_VERSION "releases/1.8.9" CACHE STRING "Tag/branch/hash to be used for BUILD_BONMIN_GIT_REPO")
 option(WITH_BUILD_BONMIN "Build BONMIN (BUILD_BONMIN_VERSION=${BUILD_BONMIN_VERSION}) from downloaded source (BUILD_BONMIN_GIT_REPO=${BUILD_BONMIN_GIT_REPO})." OFF)
 set(BUILD_BONMIN_DEPENDENCIES IPOPT CBC)
@@ -736,6 +829,7 @@ set(BUILD_BONMIN_DEPENDENCIES IPOPT CBC)
 option(WITH_CBC "Compile the CBC interface" OFF)
 set(BUILD_CBC_VERSION "releases/2.10.11" CACHE STRING "Tag/branch/hash to be used for BUILD_CBC_GIT_REPO")
 set(BUILD_CBC_GIT_REPO "https://github.com/coin-or/Cbc.git" CACHE STRING "Git repo used together with BUILD_CBC_VERSION")
+set(BUILD_CBC_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for CBC")
 
 option(WITH_BUILD_CBC "Build CBC (BUILD_CBC_VERSION=${BUILD_CBC_VERSION}) from downloaded source." OFF)
 set(BUILD_CBC_DEPENDENCIES CLP)
@@ -744,12 +838,16 @@ set(BUILD_CBC_DEPENDENCIES CLP)
 option(WITH_CLP "Compile the CLP interface" OFF)
 set(BUILD_CLP_VERSION "releases/1.17.9" CACHE STRING "Tag/branch/hash to be used for BUILD_CLP_GIT_REPO")
 set(BUILD_CLP_GIT_REPO "https://github.com/coin-or/Clp.git" CACHE STRING "Git repo used together with BUILD_CLP_VERSION")
+set(BUILD_CLP_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for CLP")
 set(BUILD_COINUTILS_VERSION "releases/2.11.10" CACHE STRING "Tag/branch/hash to be used for BUILD_COINUTILS_GIT_REPO")
 set(BUILD_COINUTILS_GIT_REPO "https://github.com/coin-or/CoinUtils.git" CACHE STRING "Git repo used together with BUILD_COINUTILS_VERSION")
+set(BUILD_COINUTILS_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for COINUTILS")
 set(BUILD_CGL_VERSION "releases/0.60.8" CACHE STRING "Tag/branch/hash to be used for BUILD_CGL_GIT_REPO")
 set(BUILD_CGL_GIT_REPO "https://github.com/coin-or/Cgl.git" CACHE STRING "Git repo used together with BUILD_CGL_VERSION")
+set(BUILD_CGL_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for CGL")
 set(BUILD_OSI_VERSION "releases/0.108.9" CACHE STRING "Tag/branch/hash to be used for BUILD_OSI_GIT_REPO")
 set(BUILD_OSI_GIT_REPO "https://github.com/coin-or/Osi.git" CACHE STRING "Git repo used together with BUILD_OSI_VERSION")
+set(BUILD_OSI_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for OSI")
 
 option(WITH_BUILD_CLP "Build CLP (BUILD_CLP_VERSION=${BUILD_CLP_VERSION}) from downloaded source (BUILD_CLP_GIT_REPO=${BUILD_CLP_GIT_REPO})." OFF)
 set(BUILD_CLP_DEPENDENCIES MUMPS LAPACK)
@@ -757,10 +855,12 @@ set(BUILD_CLP_DEPENDENCIES MUMPS LAPACK)
 # MUMPS: Sparse direct linear solver
 option(WITH_MUMPS "Enable MUMPS interface" OFF)
 set(BUILD_MUMPS_TP_VERSION "releases/3.0.2" CACHE STRING "Tag/branch/hash to be used for BUILD_MUMPS_TP_GIT_REPO")
-set(BUILD_METIS_TP_VERSION "releases/2.0.0" CACHE STRING "Tag/branch/hash to be used for BUILD_BETIS_TP_GIT_REPO")
+set(BUILD_METIS_TP_VERSION "6997f64" CACHE STRING "Tag/branch/hash to be used for BUILD_BETIS_TP_GIT_REPO")
 set(BUILD_METIS_TP_GIT_REPO "https://github.com/coin-or-tools/ThirdParty-Metis.git" CACHE STRING "Git repo used together with BUILD_METIS_TP_VERSION")
+set(BUILD_METIS_TP_GIT_SHALLOW OFF CACHE BOOL "Use shallow clone for METIS_TP")
 option(WITH_BUILD_METIS "Build Metis from downloaded source." OFF)
 set(BUILD_MUMPS_TP_GIT_REPO "https://github.com/coin-or-tools/ThirdParty-Mumps.git" CACHE STRING "Git repo used together with BUILD_MUMPS_TP_VERSION")
+set(BUILD_MUMPS_TP_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for MUMPS_TP")
 
 option(WITH_BUILD_MUMPS "Build MUMPS (BUILD_MUMPS_TP_VERSION=${BUILD_MUMPS_TP_VERSION}) from downloaded source (BUILD_MUMPS_TP_GIT_REPO=${BUILD_MUMPS_TP_GIT_REPO})." OFF)
 set(BUILD_MUMPS_DEPENDENCIES LAPACK METIS)
@@ -769,6 +869,7 @@ set(BUILD_MUMPS_DEPENDENCIES LAPACK METIS)
 option(WITH_SPRAL "Enable SPRAL interface" OFF)
 set(BUILD_SPRAL_VERSION "d385d2c9e858366d257cafaaf05760ffa6543e26" CACHE STRING "Tag/branch/hash to be used for BUILD_SPRAL_GIT_REPO")
 set(BUILD_SPRAL_GIT_REPO "https://github.com/ralna/spral.git" CACHE STRING "Git repo used together with BUILD_SPRAL_VERSION")
+set(BUILD_SPRAL_GIT_SHALLOW OFF CACHE BOOL "Use shallow clone for SPRAL")
 option(WITH_BUILD_SPRAL "Build SPRAL (BUILD_SPRAL_VERSION=${BUILD_SPRAL_VERSION}) from downloaded source (BUILD_SPRAL_GIT_REPO=${BUILD_SPRAL_GIT_REPO})." OFF)
 set(BUILD_SPRAL_DEPENDENCIES LAPACK METIS)
 
@@ -785,23 +886,47 @@ set(BUILD_HSL_DEPENDENCIES LAPACK METIS)
 # HIGHS: A MILP / QP solver
 option(WITH_HIGHS "Compile the HiGHS interface" OFF)
 set(BUILD_HIGHS_GIT_REPO "https://github.com/ERGO-Code/HiGHS" CACHE STRING "Git repo used together with BUILD_HIGHS_VERSION")
-set(BUILD_HIGHS_VERSION "v1.6.0" CACHE STRING "Tag/branch/hash to be used for BUILD_HIGHS_GIT_REPO")
+set(BUILD_HIGHS_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for HIGHS")
+set(BUILD_HIGHS_VERSION "v1.10.0" CACHE STRING "Tag/branch/hash to be used for BUILD_HIGHS_GIT_REPO")
 option(WITH_BUILD_HIGHS "Build HiGHS (BUILD_HIGHS_VERSION=${BUILD_HIGHS_VERSION}) from downloaded source (BUILD_HIGHS_GIT_REPO=${BUILD_HIGHS_GIT_REPO})." OFF)
 
 # DAQP: An Active-Set QP solver written in C
 option(WITH_DAQP "Compile the DAQP interface" OFF)
 set(BUILD_DAQP_GIT_REPO "https://github.com/jgillis/daqp.git" CACHE STRING "Git repo used together with BUILD_DAQP_VERSION")
 set(BUILD_DAQP_VERSION "master" CACHE STRING "Tag/branch/hash to be used for BUILD_DAQP_GIT_REPO")
+set(BUILD_DAQP_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for DAQP")
 option(WITH_BUILD_DAQP "Build DAQP (BUILD_DAQP_VERSION=${BUILD_DAQP_VERSION}) from downloaded source (BUILD_DAQP_GIT_REPO=${BUILD_DAQP_GIT_REPO})." OFF)
 
 # ALPAQA: An open source NLP solver based on Augmented Lagrangian
 option(WITH_ALPAQA "Compile the Alpaqa interface" OFF)
 set(BUILD_ALPAQA_GIT_REPO "https://github.com/jgillis/alpaqa" CACHE STRING "Git repo used together with BUILD_ALPAQA_VERSION")
+set(BUILD_ALPAQA_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for ALPAQA")
 set(BUILD_ALPAQA_VERSION "develop" CACHE STRING "Tag/branch/hash to be used for BUILD_ALPAQA_GIT_REPO")
 option(WITH_BUILD_ALPAQA "Build Alpaqa (BUILD_ALPAQA_VERSION=${BUILD_ALPAQA_VERSION}) from downloaded source (BUILD_ALPAQA_GIT_REPO=${BUILD_ALPAQA_GIT_REPO})." OFF)
 set(BUILD_ALPAQA_DEPENDENCIES EIGEN3)
 
 option(ALLOW_DOCKER "System has docker installed" OFF)
+
+option(WITH_ZLIB "Compile the ZLIB interface" OFF)
+set(BUILD_ZLIB_GIT_REPO "https://github.com/madler/zlib" CACHE STRING "Git repo used together with BUILD_ZLIB_VERSION")
+set(BUILD_ZLIB_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for ZLIB")
+set(BUILD_ZLIB_VERSION "v1.3.1" CACHE STRING "Tag/branch/hash to be used for BUILD_ZLIB_GIT_REPO")
+option(WITH_BUILD_ZLIB "Build ZLIB (BUILD_ZLIB_VERSION=${BUILD_ZLIB_VERSION}) from downloaded source (BUILD_ZLIB_GIT_REPO=${BUILD_ZLIB_GIT_REPO})." OFF)
+
+option(WITH_LIBZIP "Compile the LIBZIP interface" OFF)
+set(BUILD_LIBZIP_GIT_REPO "https://github.com/nih-at/libzip" CACHE STRING "Git repo used together with BUILD_LIBZIP_VERSION")
+set(BUILD_LIBZIP_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for LIBZIP")
+set(BUILD_LIBZIP_VERSION "v1.11.3" CACHE STRING "Tag/branch/hash to be used for BUILD_LIBZIP_GIT_REPO")
+option(WITH_BUILD_LIBZIP "Build LIBZIP (BUILD_LIBZIP_VERSION=${BUILD_LIBZIP_VERSION}) from downloaded source (BUILD_LIBZIP_GIT_REPO=${BUILD_LIBZIP_GIT_REPO})." OFF)
+set(BUILD_LIBZIP_DEPENDENCIES ZLIB)
+
+option(WITH_GHC_FILESYSTEM "Compile the GHC_FILESYSTEM interface" OFF)
+set(BUILD_GHC_FILESYSTEM_GIT_REPO "https://github.com/gulrak/filesystem" CACHE STRING "Git repo used together with BUILD_GHC_FILESYSTEM_VERSION")
+set(BUILD_GHC_FILESYSTEM_GIT_SHALLOW ON CACHE BOOL "Use shallow clone for GHC_FILESYSTEM")
+set(BUILD_GHC_FILESYSTEM_VERSION "v1.5.14" CACHE STRING "Tag/branch/hash to be used for BUILD_GHC_FILESYSTEM_GIT_REPO")
+option(WITH_BUILD_GHC_FILESYSTEM "Build GHC_FILESYSTEM (BUILD_GHC_FILESYSTEM_VERSION=${BUILD_GHC_FILESYSTEM_VERSION}) from downloaded source (BUILD_GHC_FILESYSTEM_GIT_REPO=${BUILD_LIBZIP_GIT_REPO})." OFF)
+
+
 
 function(libraries2flags libraries out)
 # libtool cannot handle absoulte paths (i.e. it omits the library from the list of dependencies)
@@ -817,7 +942,9 @@ function(libraries2flags libraries out)
       else()
           get_filename_component(LIB_DIR "${LIB}" DIRECTORY)
           get_filename_component(LIB_NAME "${LIB}" NAME)
-          string(REGEX REPLACE "${CMAKE_SHARED_LIBRARY_PREFIX}([A-Za-z0-9_-]+)${CMAKE_SHARED_LIBRARY_SUFFIX}" "\\1" LIB_NAME_MOD ${LIB_NAME})
+          string(REGEX REPLACE "${CMAKE_IMPORT_LIBRARY_PREFIX}([A-Za-z0-9_-]+)${CMAKE_IMPORT_LIBRARY_SUFFIX}" "\\1" LIB_NAME_MOD ${LIB_NAME})
+          string(REGEX REPLACE "${CMAKE_SHARED_LIBRARY_PREFIX}([A-Za-z0-9_-]+)${CMAKE_SHARED_LIBRARY_SUFFIX}" "\\1" LIB_NAME_MOD ${LIB_NAME_MOD})
+          string(REGEX REPLACE "${CMAKE_STATIC_LIBRARY_PREFIX}([A-Za-z0-9_-]+)${CMAKE_STATIC_LIBRARY_SUFFIX}" "\\1" LIB_NAME_MOD ${LIB_NAME_MOD})
           if(LIB_NAME STREQUAL LIB_NAME_MOD)
             set(local "${local} ${LIB}")
           else()
@@ -874,7 +1001,7 @@ endmacro()
 
 set(WITH_BUILD_MOCKUPS OFF)
 # Packages must be sorted from high to low in the dependency graph
-foreach(PKG CPLEX SNOPT KNITRO GUROBI WORHP HSL)
+foreach(PKG CPLEX SNOPT KNITRO GUROBI WORHP HSL MADNLP)
   string(TOLOWER ${PKG} PKG_LOWER)
   if(WITH_${PKG} AND NOT WITH_BUILD_${PKG})
     if(NOT WITH_MOCKUP_${PKG})
@@ -908,7 +1035,7 @@ foreach(PKG CPLEX SNOPT KNITRO GUROBI WORHP HSL)
 endforeach()
 
 # Packages must be sorted from high to low in the dependency graph
-foreach(PKG ALPAQA HIGHS DAQP PROXQP OSQP SUPERSCS SLEQP BONMIN IPOPT CBC CLP MUMPS SPRAL HSL METIS FATROP HPIPM TRLIB BLASFEO LAPACK EIGEN3 SIMDE)
+foreach(PKG ALPAQA HIGHS DAQP PROXQP OSQP CLARABEL RUMOCA SUPERSCS SLEQP BONMIN IPOPT CBC CLP MUMPS SPRAL HSL METIS FATROP HPIPM TRLIB BLASFEO LAPACK EIGEN3 SIMDE LIBZIP ZLIB)
   string(TOLOWER ${PKG} PKG_LOWER)
   if(WITH_${PKG} AND NOT WITH_MOCKUP_${PKG})
     if(NOT WITH_BUILD_${PKG})
@@ -942,16 +1069,10 @@ foreach(PKG ALPAQA HIGHS DAQP PROXQP OSQP SUPERSCS SLEQP BONMIN IPOPT CBC CLP MU
 endforeach()
 
 set(SHARED_LIBRARY_RELDIR lib)
-set(SHARED_LIBRARY64_RELDIR lib64)
 set(CMAKE_SHARED_LIBRARY_PREFIX_SHORT ${CMAKE_SHARED_LIBRARY_PREFIX})
 if (WIN32)
     set(SHARED_LIBRARY_RELDIR bin)
-    set(SHARED_LIBRARY64_RELDIR bin)
     set(CMAKE_SHARED_LIBRARY_PREFIX_SHORT "")
-else()
-    if (CMAKE_SIZEOF_VOID_P EQUAL 4)
-        set(SHARED_LIBRARY64_RELDIR lib)
-    endif()
 endif()
 
 
@@ -959,6 +1080,7 @@ endif()
 if (WITH_BUILD_MOCKUPS)
 ExternalProject_Add(mockups-external
   GIT_REPOSITORY ${BUILD_MOCKUPS_GIT_REPO}
+  GIT_SHALLOW ${BUILD_MOCKUPS_GIT_SHALLOW}
   GIT_TAG ${BUILD_MOCKUPS_VERSION}
   PREFIX "${CMAKE_BINARY_DIR}/external_projects"
   UPDATE_COMMAND ""
@@ -1011,6 +1133,18 @@ if(WITH_KNITRO AND WITH_MOCKUP_KNITRO)
 endif()
 add_feature_info(knitro-interface WITH_KNITRO "Interface to the NLP solver KNITRO.")
 
+if(WITH_MADNLP AND WITH_MOCKUP_MADNLP)
+  add_library(madnlp::madnlp_c SHARED IMPORTED)
+  add_dependencies(madnlp::madnlp_c mockups-external)
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/mockups/madnlp/include")
+  set_target_properties(madnlp::madnlp_c PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/mockups/madnlp/include"
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/mockups/madnlp/${SHARED_LIBRARY_RELDIR}/${CMAKE_SHARED_LIBRARY_PREFIX_SHORT}madnlp_c${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    IMPORTED_IMPLIB "${CMAKE_BINARY_DIR}/external_projects/mockups/madnlp/lib/${CMAKE_SHARED_LIBRARY_PREFIX_SHORT}madnlp_c${CMAKE_IMPORT_LIBRARY_SUFFIX}"
+  )
+endif()
+add_feature_info(madnlp-interface WITH_MADNLP "Interface to the NLP solver MadNLP.")
+
 if(WITH_SNOPT AND WITH_MOCKUP_SNOPT)
   add_library(snopt::snopt SHARED IMPORTED)
   add_dependencies(snopt::snopt mockups-external)
@@ -1046,6 +1180,7 @@ if(WITH_LAPACK)
     # Requires gcc>=5.0
     ExternalProject_Add(openblas-external
       GIT_REPOSITORY ${BUILD_LAPACK_GIT_REPO}
+      GIT_SHALLOW ${BUILD_LAPACK_GIT_SHALLOW}
       GIT_TAG ${BUILD_LAPACK_VERSION}
       PREFIX "${CMAKE_BINARY_DIR}/external_projects"
       UPDATE_COMMAND ""
@@ -1081,6 +1216,7 @@ if(WITH_BLASFEO)
     endif()
     ExternalProject_Add(blasfeo-external
       GIT_REPOSITORY ${BUILD_BLASFEO_GIT_REPO}
+      GIT_SHALLOW ${BUILD_BLASFEO_GIT_SHALLOW}
       GIT_TAG ${BUILD_BLASFEO_VERSION}
       PREFIX "${CMAKE_BINARY_DIR}/external_projects"
       UPDATE_COMMAND ""
@@ -1116,6 +1252,7 @@ if(WITH_HPIPM)
     ExternalProject_Add(hpipm-external
       DEPENDS ${BLASFEO_DEPENDS_TARGET}
       GIT_REPOSITORY ${BUILD_HPIPM_GIT_REPO}
+      GIT_SHALLOW ${BUILD_HPIPM_GIT_SHALLOW}
       GIT_TAG ${BUILD_HPIPM_VERSION}
       PREFIX "${CMAKE_BINARY_DIR}/external_projects"
       UPDATE_COMMAND ""
@@ -1148,20 +1285,25 @@ if(WITH_FATROP)
     ExternalProject_Add(fatrop-external
       DEPENDS ${BLASFEO_DEPENDS_TARGET}
       GIT_REPOSITORY ${BUILD_FATROP_GIT_REPO}
+      GIT_SHALLOW ${BUILD_FATROP_GIT_SHALLOW}
       GIT_TAG ${BUILD_FATROP_VERSION}
       PREFIX "${CMAKE_BINARY_DIR}/external_projects"
       UPDATE_COMMAND ""
       CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
-      CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_RPATH=${CMAKE_INSTALL_RPATH} -DBLASFEO_TARGET=X64_AUTOMATIC -DENABLE_MULTITHREADING=OFF -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>)
+      CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_RPATH=${CMAKE_INSTALL_RPATH} -DBUILD_WITH_BLASFEO=OFF -DBLASFEO_INSTALL_DIR=${BLASFEO_PATH} -DENABLE_MULTITHREADING=OFF -DMARCH_NATIVE=OFF -DBUILD_EXECUTABLES=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>)
     add_library(fatrop SHARED IMPORTED)
     add_dependencies(fatrop fatrop-external)
-    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include/fatrop")
-    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include/blasfeo/include")
+    target_link_libraries(fatrop INTERFACE blasfeo)
+    # This is similar to ALIAS but works fine on imported targets with CMake 3.10
+    add_library(fatrop::fatrop INTERFACE IMPORTED)
+    set_target_properties(fatrop::fatrop PROPERTIES INTERFACE_LINK_LIBRARIES fatrop)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include")
     set_target_properties(fatrop PROPERTIES
-      INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/include/fatrop;${CMAKE_BINARY_DIR}/external_projects/include/blasfeo/include"
+      INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/include"
       IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY_RELDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}fatrop${CMAKE_SHARED_LIBRARY_SUFFIX}"
       IMPORTED_IMPLIB "${CMAKE_BINARY_DIR}/external_projects/lib/${CMAKE_IMPORT_LIBRARY_PREFIX}fatrop${CMAKE_IMPORT_LIBRARY_SUFFIX}"
     )
+    create_import_library(fatrop fatrop)
   else()
     #add_library(lapack INTERFACE)
     #target_link_libraries(lapack INTERFACE ${LAPACK_LIBRARIES})
@@ -1173,24 +1315,30 @@ message(STATUS "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME} ${WIN32}")
 
 add_feature_info(lapack-interface WITH_LAPACK "Interface to LAPACK.")
 
+set(COIN_FLAGS)
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+set(COIN_FLAGS  ${COIN_FLAGS} --enable-debug)
+endif()
+
 if(WITH_BUILD_METIS)
   add_feature_info(metis-sourcebuild ON "Build METIS (BUILD_METIS_TP_VERSION=${BUILD_METIS_TP_VERSION}) from downloaded source.")
-  if(ALLOW_DOCKER)
-     set(COIN_RECONFIG_CMD docker run --rm -v <SOURCE_DIR>:/work ghcr.io/casadi/coinbuild:latest /bin/bash ./run_autotools /work COMMAND)
-  else()
-     set(COIN_RECONFIG_CMD)
-  endif()
   ExternalProject_Add(metis-external
         GIT_REPOSITORY ${BUILD_METIS_TP_GIT_REPO}
+        GIT_SHALLOW ${BUILD_METIS_TP_GIT_SHALLOW}
         GIT_TAG ${BUILD_METIS_TP_VERSION}
         DEPENDS ${LAPACK_DEPENDS_TARGET}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND ${COIN_RECONFIG_CMD} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR>
+        BUILD_IN_SOURCE ON
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR>
 
           # GKFree is not defined (variadic definition in utils.c); fails on MacOS target
-          "CFLAGS=-Wno-implicit-function-declaration"
-        PATCH_COMMAND COMMAND cd <SOURCE_DIR> && ./get.Metis)
+          "ADD_CFLAGS=-Wno-implicit-function-declaration ${EXTERNAL_PROJECT_CFLAGS}"
+          "ADD_CXXFLAGS=-Wno-implicit-function-declaration ${EXTERNAL_PROJECT_CXXFLAGS}"
+          "ADD_FFLAGS=-Wno-implicit-function-declaration ${EXTERNAL_PROJECT_FFLAGS}"
+          "ADD_FCFLAGS=-Wno-implicit-function-declaration ${EXTERNAL_PROJECT_FCFLAGS}"
+        ${COIN_FLAGS}
+        PATCH_COMMAND COMMAND cd <SOURCE_DIR> && ${AUTOTOOLS_SHELL} ./get.Metis)
   add_library(metis::metis INTERFACE IMPORTED)
   add_dependencies(metis::metis metis-external)
   set_target_properties(metis::metis PROPERTIES
@@ -1221,7 +1369,10 @@ if(WITH_HSL)
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
         PATCH_COMMAND ${EXTERNAL_CMAKE_COMMAND} -DSRC=<SOURCE_DIR>  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_hsl.cmake
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure --disable-static "--with-blas=${LAPACK_LFLAGS}" ${CROSS_FLAGS_CONFIGURE} "FCFLAGS=${LAPACK_LFLAGS} -L${CMAKE_BINARY_DIR}/external_projects/lib -Wl,-rpath,${CMAKE_BINARY_DIR}/external_projects/lib -l${METIS_LIB} -lm" --prefix=<INSTALL_DIR>
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure --disable-static "--with-blas=${LAPACK_LFLAGS}" ${CROSS_FLAGS_CONFIGURE} "ADD_FCFLAGS=${LAPACK_LFLAGS} -L${CMAKE_BINARY_DIR}/external_projects/lib -Wl,-rpath,${CMAKE_BINARY_DIR}/external_projects/lib -l${METIS_LIB} -lm ${EXTERNAL_PROJECT_FCFLAGS}" --prefix=<INSTALL_DIR>
+        "ADD_CFLAGS=${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=${EXTERNAL_PROJECT_CXXFLAGS}"
+        ${COIN_FLAGS}
         BUILD_COMMAND make
         INSTALL_COMMAND make install
         COMMAND cp ${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY_RELDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}coinhsl${CMAKE_SHARED_LIBRARY_SUFFIX} ${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY_RELDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}hsl${CMAKE_SHARED_LIBRARY_SUFFIX})
@@ -1240,12 +1391,19 @@ if(WITH_MUMPS)
     get_target_property(METIS_LIB metis::metis IMPORTED_LIBNAME)
     ExternalProject_Add(mumps-external
         GIT_REPOSITORY ${BUILD_MUMPS_TP_GIT_REPO}
+        GIT_SHALLOW ${BUILD_MUMPS_TP_GIT_SHALLOW}
         GIT_TAG ${BUILD_MUMPS_TP_VERSION}
         DEPENDS ${LAPACK_DEPENDS_TARGET} metis::metis
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE}  --prefix=<INSTALL_DIR> "--with-metis-cflags=-I${METIS_INCLUDE_DIR}" "--with-metis-lflags=-L${CMAKE_BINARY_DIR}/external_projects/lib -l${METIS_LIB} -lm" "--with-lapack-lflags=${LAPACK_LFLAGS}" ${CROSS_FLAGS_FORTRAN}
-        PATCH_COMMAND COMMAND cd <SOURCE_DIR> && ./get.Mumps)
+        BUILD_IN_SOURCE ON
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE}  --prefix=<INSTALL_DIR> "--with-metis-cflags=-I${METIS_INCLUDE_DIR}" "--with-metis-lflags=-L${CMAKE_BINARY_DIR}/external_projects/lib -l${METIS_LIB} -lm" "--with-lapack-lflags=${LAPACK_LFLAGS}" ${CROSS_FLAGS_FORTRAN}
+        "ADD_CFLAGS=${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=${EXTERNAL_PROJECT_CXXFLAGS}"
+        "ADD_FFLAGS=${EXTERNAL_PROJECT_FFLAGS}"
+        "ADD_FCFLAGS=${EXTERNAL_PROJECT_FCFLAGS}"
+        ${COIN_FLAGS}
+        PATCH_COMMAND COMMAND cd <SOURCE_DIR> && ${AUTOTOOLS_SHELL} ./get.Mumps)
 
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include/coin-or")
     add_library(mumps SHARED IMPORTED)
@@ -1279,14 +1437,23 @@ if(WITH_SPRAL)
     get_target_property(METIS_LIB metis::metis IMPORTED_LIBNAME)
     ExternalProject_Add(spral-external
         GIT_REPOSITORY ${BUILD_SPRAL_GIT_REPO}
+        GIT_SHALLOW ${BUILD_SPRAL_GIT_SHALLOW}
         GIT_TAG ${BUILD_SPRAL_VERSION}
         DEPENDS ${LAPACK_DEPENDS_TARGET} metis::metis
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND ${SPRAL_RECONFIG_CMD} CFLAGS=-fPIC CXXFLAGS=-fPIC FFLAGS=-fPIC FCFLAGS=-fPIC <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --disable-gpu --prefix=<INSTALL_DIR> --disable-openmp "--with-metis-inc-dir=${METIS_INCLUDE_DIR}" "--with-metis=-L${CMAKE_BINARY_DIR}/external_projects/lib -l${METIS_LIB} -lm" "--with-lapack=${LAPACK_LFLAGS}" "--with-blas=${LAPACK_LFLAGS}" ${CROSS_FLAGS_FORTRAN})
+        CONFIGURE_COMMAND ${SPRAL_RECONFIG_CMD} ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --disable-gpu --prefix=<INSTALL_DIR> --disable-openmp "--with-metis-inc-dir=${METIS_INCLUDE_DIR}" "--with-metis=-L${CMAKE_BINARY_DIR}/external_projects/lib -l${METIS_LIB} -lm" "--with-lapack=${LAPACK_LFLAGS}" "--with-blas=${LAPACK_LFLAGS}" ${CROSS_FLAGS_FORTRAN}
+        "CFLAGS=-fPIC ${EXTERNAL_PROJECT_CFLAGS}"
+        "CXXFLAGS=-fPIC ${EXTERNAL_PROJECT_CXXFLAGS}"
+        "FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+        "FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
+        ${COIN_FLAGS}
+        )
     set(SPRAL_DEPENDS_TARGET spral-external)
     set(SPRAL_FLAGS "--with-spral-cflags=-I${CMAKE_BINARY_DIR}/external_projects/include"
         "--with-spral-lflags=-L${CMAKE_BINARY_DIR}/external_projects/lib -lspral -lgfortran -lm -lcoinmetis ${LAPACK_LFLAGS}")
+  else()
+    set(SPRAL_DEPENDS_TARGET spral::spral)
   endif()
 endif()
 add_feature_info(spral-interface WITH_SPRAL "Interface to SPRAL.")
@@ -1296,10 +1463,17 @@ if((WITH_CLP AND WITH_BUILD_CLP) OR (WITH_CBC AND WITH_BUILD_CBC))
     ExternalProject_Add(coinutils-external
           DEPENDS ${LAPACK_DEPENDS_TARGET}
           GIT_REPOSITORY ${BUILD_COINUTILS_GIT_REPO}
+          GIT_SHALLOW ${BUILD_COINUTILS_GIT_SHALLOW}
           GIT_TAG ${BUILD_COINUTILS_VERSION}
           PREFIX "${CMAKE_BINARY_DIR}/external_projects"
           UPDATE_COMMAND ""
-          CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} "--with-lapack-lflags=${LAPACK_LFLAGS}" --prefix=<INSTALL_DIR> )
+          CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} "--with-lapack-lflags=${LAPACK_LFLAGS}" --prefix=<INSTALL_DIR>
+          "ADD_CFLAGS=-fPIC -Wno-register ${EXTERNAL_PROJECT_CFLAGS}"
+          "ADD_CXXFLAGS=-fPIC -Wno-register ${EXTERNAL_PROJECT_CXXFLAGS}"
+          "ADD_FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+          "ADD_FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
+          ${COIN_FLAGS}
+          )
     add_library(coinutils SHARED IMPORTED)
     add_dependencies(coinutils coinutils-external)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include/coin")
@@ -1315,10 +1489,16 @@ if(WITH_CLP)
     ExternalProject_Add(osi-external
         DEPENDS coinutils-external
         GIT_REPOSITORY ${BUILD_OSI_GIT_REPO}
+        GIT_SHALLOW ${BUILD_OSI_GIT_SHALLOW}
         GIT_TAG ${BUILD_OSI_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR> ${CROSS_FLAGS_FORTRAN}
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR> ${CROSS_FLAGS_FORTRAN}
+        "ADD_CFLAGS=-fPIC ${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=-fPIC ${EXTERNAL_PROJECT_CXXFLAGS}"
+        "ADD_FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+        "ADD_FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
+        ${COIN_FLAGS}
 	# For unknown reasons, Coin-or/configure disables pkg-config by default for clang compilers 
 	--enable-pkg-config
     )
@@ -1328,18 +1508,24 @@ if(WITH_CLP)
       IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/lib/${CMAKE_SHARED_LIBRARY_PREFIX}Osi${CMAKE_SHARED_LIBRARY_SUFFIX}"
       IMPORTED_IMPLIB "${CMAKE_BINARY_DIR}/external_projects/lib/${CMAKE_SHARED_LIBRARY_PREFIX}Osi${CMAKE_IMPORT_LIBRARY_SUFFIX}"
     )
-    set(APPLE_FLAGS "")
+    set(EXTERNAL_PROJECT_CXXFLAGS_LOCAL "${EXTERNAL_PROJECT_CXXFLAGS}")
     if(APPLE)
         # Delocate step wants to grow zlib install name
-        set(APPLE_FLAGS "ADD_CXXFLAGS=-Wl,-headerpad_max_install_names")
+        set(EXTERNAL_PROJECT_CXXFLAGS_LOCAL "${EXTERNAL_PROJECT_CXXFLAGS} -Wl,-headerpad_max_install_names")
     endif()
     ExternalProject_Add(clp-external
         DEPENDS osi-external mumps-external coinutils-external ${LAPACK_DEPENDS_TARGET}
         GIT_REPOSITORY ${BUILD_CLP_GIT_REPO}
+        GIT_SHALLOW ${BUILD_CLP_GIT_SHALLOW}
         GIT_TAG ${BUILD_CLP_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} "--with-lapack-lflags=${LAPACK_LFLAGS}" --prefix=<INSTALL_DIR>  ${CROSS_FLAGS_FORTRAN}
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} "--with-lapack-lflags=${LAPACK_LFLAGS}" --prefix=<INSTALL_DIR>  ${CROSS_FLAGS_FORTRAN}
+        "ADD_CFLAGS=-fPIC ${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=-fPIC ${EXTERNAL_PROJECT_CXXFLAGS_LOCAL}"
+        "ADD_FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+        "ADD_FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
+        ${COIN_FLAGS}
 	# For unknown reasons, Coin-or/configure disables pkg-config by default for clang compilers 
 	--enable-pkg-config
 	${APPLE_FLAGS}
@@ -1372,10 +1558,16 @@ if(WITH_CBC)
     ExternalProject_Add(cgl-external
         DEPENDS osi-external clp-external coinutils-external
         GIT_REPOSITORY ${BUILD_CGL_GIT_REPO}
+        GIT_SHALLOW ${BUILD_CGL_GIT_SHALLOW}
         GIT_TAG ${BUILD_CGL_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR> ${CROSS_FLAGS_FORTRAN}
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR> ${CROSS_FLAGS_FORTRAN}
+        "ADD_CFLAGS=-fPIC ${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=-fPIC ${EXTERNAL_PROJECT_CXXFLAGS}"
+        "ADD_FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+        "ADD_FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
+        ${COIN_FLAGS}
 	# For unknown reasons, Coin-or/configure disables pkg-config by default for clang compilers 
 	--enable-pkg-config
 	)
@@ -1383,10 +1575,16 @@ if(WITH_CBC)
     ExternalProject_Add(cbc-external
         DEPENDS coinutils-external cgl-external osi-external mumps-external clp-external ${LAPACK_DEPENDS_TARGET}
         GIT_REPOSITORY ${BUILD_CBC_GIT_REPO}
+        GIT_SHALLOW ${BUILD_CBC_GIT_SHALLOW}
         GIT_TAG ${BUILD_CBC_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --enable-cbc-parallel --prefix=<INSTALL_DIR> "--with-lapack-lflags=${LAPACK_LFLAGS}"  ${CROSS_FLAGS_FORTRAN}
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --enable-cbc-parallel --prefix=<INSTALL_DIR> "--with-lapack-lflags=${LAPACK_LFLAGS}"  ${CROSS_FLAGS_FORTRAN}
+        "ADD_CFLAGS=-fPIC ${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=-fPIC ${EXTERNAL_PROJECT_CXXFLAGS}"
+        "ADD_FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+        "ADD_FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
+        ${COIN_FLAGS}
 	# For unknown reasons, Coin-or/configure disables pkg-config by default for clang compilers 
 	--enable-pkg-config
 	)
@@ -1410,15 +1608,11 @@ if(WITH_CBC)
 endif()
 add_feature_info(cbc-interface WITH_CBC "Interface to the LP solver CBC.")
 
-set(COIN_FLAGS "")
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-set(COIN_FLAGS "--enable-debug")
-endif()
-
 if(WITH_BUILD_TRLIB)
   ExternalProject_Add(trlib-external
       DEPENDS ${LAPACK_DEPENDS_TARGET}
       GIT_REPOSITORY ${BUILD_TRLIB_GIT_REPO}
+      GIT_SHALLOW ${BUILD_TRLIB_GIT_SHALLOW}
       GIT_TAG ${BUILD_TRLIB_VERSION}
       PREFIX "${CMAKE_BINARY_DIR}/external_projects"
       CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
@@ -1435,10 +1629,16 @@ if(WITH_IPOPT)
     ExternalProject_Add(ipopt-external
         DEPENDS ${LAPACK_DEPENDS_TARGET} mumps-external ${SPRAL_DEPENDS_TARGET}
         GIT_REPOSITORY ${BUILD_IPOPT_GIT_REPO}
+        GIT_SHALLOW ${BUILD_IPOPT_GIT_SHALLOW}
         GIT_TAG ${BUILD_IPOPT_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR> "--with-mumps-cflags=-I${CMAKE_BINARY_DIR}/external_projects/include/coin-or/mumps" "--with-mumps-lflags=-L${CMAKE_BINARY_DIR}/external_projects/lib ${WHOLE_ARCHIVE_ON}-lcoinmumps ${WHOLE_ARCHIVE_OFF}"
+        BUILD_IN_SOURCE ON
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR> "--with-mumps-cflags=-I${CMAKE_BINARY_DIR}/external_projects/include/coin-or/mumps" "--with-mumps-lflags=-L${CMAKE_BINARY_DIR}/external_projects/lib ${WHOLE_ARCHIVE_ON}-lcoinmumps ${WHOLE_ARCHIVE_OFF}"
+        "ADD_CFLAGS=-fPIC ${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=-fPIC ${EXTERNAL_PROJECT_CXXFLAGS}"
+        "ADD_FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+        "ADD_FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
         ${SPRAL_FLAGS}
         "--with-lapack-lflags= ${LAPACK_LFLAGS}" ${CROSS_FLAGS_FORTRAN}
 	--disable-java
@@ -1475,15 +1675,21 @@ if(WITH_BONMIN)
     ExternalProject_Add(bonmin-external
         DEPENDS mumps-external metis-external coinutils-external osi-external clp-external cgl-external cbc-external ipopt-external
         GIT_REPOSITORY ${BUILD_BONMIN_GIT_REPO}
+        GIT_SHALLOW ${BUILD_BONMIN_GIT_SHALLOW}
         GIT_TAG ${BUILD_BONMIN_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
-        CONFIGURE_COMMAND <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR>  ${CROSS_FLAGS_FORTRAN}
+        CONFIGURE_COMMAND ${AUTOTOOLS_SHELL} <SOURCE_DIR>/configure ${CROSS_FLAGS_CONFIGURE} --prefix=<INSTALL_DIR>  ${CROSS_FLAGS_FORTRAN} --enable-shared --disable-static
+        "ADD_CFLAGS=-fPIC ${EXTERNAL_PROJECT_CFLAGS}"
+        "ADD_CXXFLAGS=-fPIC ${EXTERNAL_PROJECT_CXXFLAGS}"
+        "ADD_FFLAGS=-fPIC ${EXTERNAL_PROJECT_FFLAGS}"
+        "ADD_FCFLAGS=-fPIC ${EXTERNAL_PROJECT_FCFLAGS}"
 	# For unknown reasons, Coin-or/configure disables pkg-config by default for clang compilers 
 	--enable-pkg-config
 	# issue #2988
 	--enable-dependency-linking
 	${MINGW_FLAG}
+  ${COIN_FLAGS}
 	)
 
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include/coin")
@@ -1504,11 +1710,12 @@ if(WITH_HIGHS)
   if(WITH_BUILD_HIGHS)
     ExternalProject_Add(highs-external
         GIT_REPOSITORY ${BUILD_HIGHS_GIT_REPO}
+        GIT_SHALLOW ${BUILD_HIGHS_GIT_SHALLOW}
         GIT_TAG ${BUILD_HIGHS_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
         CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
-        CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DFAST_BUILD=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> ${CROSS_FLAGS_CMAKE})
+        CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> ${CROSS_FLAGS_CMAKE})
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include/highs")
     add_library(highs SHARED IMPORTED)
     add_dependencies(highs highs-external)
@@ -1530,6 +1737,7 @@ if(WITH_DAQP)
   if(WITH_BUILD_DAQP)
     ExternalProject_Add(daqp-external
         GIT_REPOSITORY ${BUILD_DAQP_GIT_REPO}
+        GIT_SHALLOW ${BUILD_DAQP_GIT_SHALLOW}
         GIT_TAG ${BUILD_DAQP_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
@@ -1558,19 +1766,16 @@ if(WITH_SLEQP)
     ExternalProject_Add(sleqp-external
         DEPENDS trlib highs mumps
         GIT_REPOSITORY ${BUILD_SLEQP_GIT_REPO}
+        GIT_SHALLOW ${BUILD_SLEQP_GIT_SHALLOW}
         GIT_TAG ${BUILD_SLEQP_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         CMAKE_COMMAND ${EXTERNAL_CMAKE_COMMAND} -E env MUMPSDIR=${MUMPS_INTERFACE_INCLUDE_DIRECTORIES} ${EXTERNAL_CMAKE_COMMAND}
-        CMAKE_ARGS -DSLEQP_MUMPS_INIT_MPI=OFF ${CMAKE_BLAS_CONFIG} -DCMAKE_INSTALL_RPATH=${CMAKE_INSTALL_RPATH} -DSLEQP_ENABLE_UNIT_TESTS=OFF -DSLEQP_ENABLE_PYTHON=OFF -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> ${CROSS_FLAGS_CMAKE})
+        CMAKE_ARGS -DSLEQP_MUMPS_INIT_MPI=OFF ${CMAKE_BLAS_CONFIG} -DCMAKE_INSTALL_RPATH=${CMAKE_INSTALL_RPATH} -DSLEQP_ENABLE_UNIT_TESTS=OFF -DSLEQP_ENABLE_PYTHON=OFF -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> ${CROSS_FLAGS_CMAKE})
         
   add_library(sleqp::sleqp SHARED IMPORTED)
   add_dependencies(sleqp::sleqp sleqp-external)
-  set(SHARED_LIBRARY64_RELDIR_SLEQP ${SHARED_LIBRARY64_RELDIR})
-  if(APPLE)
-    set(SHARED_LIBRARY64_RELDIR_SLEQP lib)
-  endif()
   set_target_properties(sleqp::sleqp PROPERTIES
-    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY64_RELDIR_SLEQP}/${CMAKE_SHARED_LIBRARY_PREFIX}sleqp${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY_RELDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}sleqp${CMAKE_SHARED_LIBRARY_SUFFIX}"
     IMPORTED_IMPLIB "${CMAKE_BINARY_DIR}/external_projects/lib/${CMAKE_SHARED_LIBRARY_PREFIX}sleqp${CMAKE_IMPORT_LIBRARY_SUFFIX}"
     INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/include"
   )
@@ -1582,6 +1787,7 @@ add_feature_info(sleqp-interface WITH_SLEQP "Interface to the NLP solver SLEQP."
 if(WITH_BUILD_EIGEN3)
   ExternalProject_Add(eigen3-external
       GIT_REPOSITORY ${BUILD_EIGEN3_GIT_REPO}
+      GIT_SHALLOW ${BUILD_EIGEN3_GIT_SHALLOW}
       GIT_TAG ${BUILD_EIGEN3_VERSION}
       PREFIX "${CMAKE_BINARY_DIR}/external_projects"
       UPDATE_COMMAND ""
@@ -1602,20 +1808,17 @@ if(WITH_ALPAQA)
     ExternalProject_Add(alpaqa-external
         DEPENDS eigen3
         GIT_REPOSITORY ${BUILD_ALPAQA_GIT_REPO}
+        GIT_SHALLOW ${BUILD_ALPAQA_GIT_SHALLOW}
         GIT_TAG ${BUILD_ALPAQA_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
         CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
-        CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DEigen3_DIR=${CMAKE_BINARY_DIR}/external_projects/share/eigen3/cmake -DCMAKE_DL_LIBS=OFF -DALPAQA_WITH_DRIVERS=OFF -DALPAQA_WITH_EXAMPLES=OFF -DALPAQA_WITH_TESTS=OFF -DALPAQA_WITH_CASADI=OFF -DALPAQA_HAVE_FORTRAN=OFF -DCMAKE_INSTALL_RPATH=${CMAKE_INSTALL_RPATH} -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> ${CROSS_FLAGS_CMAKE})
+        CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_LIBDIR=lib -DEigen3_DIR=${CMAKE_BINARY_DIR}/external_projects/share/eigen3/cmake -DCMAKE_DL_LIBS=OFF -DALPAQA_WITH_DRIVERS=OFF -DALPAQA_WITH_EXAMPLES=OFF -DALPAQA_WITH_TESTS=OFF -DALPAQA_WITH_CASADI=OFF -DALPAQA_HAVE_FORTRAN=OFF -DCMAKE_INSTALL_RPATH=${CMAKE_INSTALL_RPATH} -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> ${CROSS_FLAGS_CMAKE})
     add_library(alpaqa SHARED IMPORTED)
     add_dependencies(alpaqa alpaqa-external)
     target_include_directories(alpaqa INTERFACE "${CMAKE_BINARY_DIR}/external_projects/include")
-    set(SHARED_LIBRARY64_RELDIR_ALPAQA ${SHARED_LIBRARY64_RELDIR})
-    if("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "aarch64" OR APPLE)
-      set(SHARED_LIBRARY64_RELDIR_ALPAQA lib)
-    endif()
     set_target_properties(alpaqa PROPERTIES
-       IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY64_RELDIR_ALPAQA}/${CMAKE_SHARED_LIBRARY_PREFIX}alpaqa${CMAKE_SHARED_LIBRARY_SUFFIX}"
+       IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY_RELDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}alpaqa${CMAKE_SHARED_LIBRARY_SUFFIX}"
        IMPORTED_IMPLIB "${CMAKE_BINARY_DIR}/external_projects/lib/${CMAKE_IMPORT_LIBRARY_PREFIX}alpaqa${CMAKE_IMPORT_LIBRARY_SUFFIX}"
     )
     target_link_libraries(alpaqa INTERFACE eigen3)
@@ -1626,8 +1829,10 @@ add_feature_info(alpaqa-interface WITH_ALPAQA "Interface to the NLP solver Alpaq
 
 
 if(WITH_BUILD_SIMDE)
+  add_feature_info(simde-sourcebuild ON "Build Simde (BUILD_SIMDE_VERSION=${BUILD_SIMDE_VERSION}) from downloaded source.")
   ExternalProject_Add(simde-external
       GIT_REPOSITORY ${BUILD_SIMDE_GIT_REPO}
+      GIT_SHALLOW ${BUILD_SIMDE_GIT_SHALLOW}
       GIT_TAG ${BUILD_SIMDE_VERSION}
       PREFIX "${CMAKE_BINARY_DIR}/external_projects"
       CONFIGURE_COMMAND ""
@@ -1647,6 +1852,7 @@ if(WITH_PROXQP)
     ExternalProject_Add(proxqp-external
         DEPENDS Simde eigen3
         GIT_REPOSITORY ${BUILD_PROXQP_GIT_REPO}
+        GIT_SHALLOW ${BUILD_PROXQP_GIT_SHALLOW}
         GIT_TAG ${BUILD_PROXQP_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
@@ -1672,6 +1878,7 @@ if(WITH_OSQP)
   if(WITH_BUILD_OSQP)
     ExternalProject_Add(osqp-external
         GIT_REPOSITORY ${BUILD_OSQP_GIT_REPO}
+        GIT_SHALLOW ${BUILD_OSQP_GIT_SHALLOW}
         GIT_TAG ${BUILD_OSQP_VERSION}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
         UPDATE_COMMAND ""
@@ -1696,10 +1903,57 @@ if(WITH_OSQP)
 endif()
 add_feature_info(osqp-interface WITH_OSQP "Interface to QP solver OSQP.")
 
+if(WITH_CLARABEL)
+  if(WITH_BUILD_CLARABEL)
+    ExternalProject_Add(clarabel-external
+        GIT_REPOSITORY ${BUILD_CLARABEL_GIT_REPO}
+        GIT_SHALLOW ${BUILD_CLARABEL_GIT_SHALLOW}
+        GIT_TAG ${BUILD_CLARABEL_VERSION}
+        PREFIX "${CMAKE_BINARY_DIR}/external_projects"
+        UPDATE_COMMAND ""
+        CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
+        CMAKE_ARGS -DCLARABEL_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_INCLUDEDIR=include/clarabel -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>)
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/external_projects/include/clarabel")
+    add_library(clarabel SHARED IMPORTED)
+    # This is similar to ALIAS but works fine on imported targets with CMake 3.10
+    add_library(clarabel::clarabel INTERFACE IMPORTED)
+    set_target_properties(clarabel::clarabel PROPERTIES INTERFACE_LINK_LIBRARIES clarabel)
+    add_dependencies(clarabel clarabel-external)
+    set_target_properties(clarabel PROPERTIES
+       INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/include/clarabel"
+       IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/${SHARED_LIBRARY_RELDIR}/${CMAKE_SHARED_LIBRARY_PREFIX_SHORT}clarabel_c${CMAKE_SHARED_LIBRARY_SUFFIX}"
+       IMPORTED_IMPLIB "${CMAKE_BINARY_DIR}/clarabel_c.lib"
+       IMPORTED_SO_NAME "${CMAKE_SHARED_LIBRARY_PREFIX}clarabel_c${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+    install(DIRECTORY
+      "${CMAKE_BINARY_DIR}/external_projects/include/clarabel"
+      DESTINATION "${INCLUDE_PREFIX}")
+      create_import_library(clarabel clarabel_c)
+  endif()
+endif()
+add_feature_info(clarabel-interface WITH_CLARABEL "Interface to QP solver Clarabel.")
+
+if(WITH_RUMOCA)
+  if(WITH_BUILD_RUMOCA)
+    ExternalProject_Add(rumoca-external
+        GIT_REPOSITORY ${BUILD_RUMOCA_GIT_REPO}
+        GIT_SHALLOW ${BUILD_RUMOCA_GIT_SHALLOW}
+        GIT_TAG ${BUILD_RUMOCA_VERSION}
+        PREFIX "${CMAKE_BINARY_DIR}/external_projects"
+        UPDATE_COMMAND ""
+        CONFIGURE_COMMAND ""
+        BUILD_IN_SOURCE ON #  --target-dir=<BINARY_DIR>
+        BUILD_COMMAND cargo build ${CROSS_FLAGS_RUST} -v
+        INSTALL_COMMAND cargo install --path . --root <INSTALL_DIR>)
+  endif()
+endif()
+add_feature_info(rumoca-interface WITH_RUMOCA "Interface to rumoca.")
+
 if(WITH_SUPERSCS)
   if(WITH_BUILD_SUPERSCS)
     ExternalProject_Add(superscs-external
         GIT_REPOSITORY ${BUILD_SUPERSCS_GIT_REPO}
+        GIT_SHALLOW ${BUILD_SUPERSCS_GIT_SHALLOW}
         GIT_TAG ${BUILD_SUPERSCS_VERSION}
         DEPENDS ${LAPACK_DEPENDS_TARGET}
         PREFIX "${CMAKE_BINARY_DIR}/external_projects"
@@ -1763,6 +2017,88 @@ if(WITH_SLICOT)
   find_package(SLICOT REQUIRED)
 endif()
 add_feature_info(slicot-interface WITH_SLICOT "Interface to the controls library SLICOT.")
+
+
+if(WITH_ZLIB)
+  if(WITH_BUILD_ZLIB)
+    ExternalProject_Add(libz-external
+      GIT_REPOSITORY ${BUILD_ZLIB_GIT_REPO}
+      GIT_SHALLOW ${BUILD_ZLIB_GIT_SHALLOW}
+      GIT_TAG ${BUILD_ZLIB_VERSION}
+      PREFIX "${CMAKE_BINARY_DIR}/external_projects"
+      UPDATE_COMMAND ""
+      CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
+      CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_TRY_COMPILE_CONFIGURATION=Debug -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DMINIZIP_ENABLE_BZIP2=OFF -DBUILD_SHARED_LIBS=OFF)
+    add_library(ZLIB::libz STATIC IMPORTED)
+    add_dependencies(ZLIB::libz libz-external)
+    set(ZLIB_STATIC_NAME ${CMAKE_STATIC_LIBRARY_PREFIX}z${CMAKE_STATIC_LIBRARY_SUFFIX})
+    if(WIN32)
+      if(MSVC)
+        set(ZLIB_STATIC_NAME zlibstatic.lib)
+      else()
+	set(ZLIB_STATIC_NAME ${CMAKE_STATIC_LIBRARY_PREFIX}zlibstatic.a)
+      endif()
+    endif()
+    set_target_properties(ZLIB::libz PROPERTIES
+      IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/lib/${ZLIB_STATIC_NAME}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/include")
+  else()
+    find_package(ZLIB REQUIRED)
+    add_library(ZLIB::libz INTERFACE IMPORTED)
+    set_target_properties(ZLIB::libz PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${ZLIB_INCLUDE_DIRS}"
+      INTERFACE_LINK_LIBRARIES "${ZLIB_LIBRARIES}")
+  endif()
+endif()
+add_feature_info(zlib-interface WITH_ZLIB "Interface to the zlib.")
+
+if(WITH_LIBZIP)
+  if(WITH_BUILD_LIBZIP)
+    ExternalProject_Add(libzip-external
+      GIT_REPOSITORY ${BUILD_LIBZIP_GIT_REPO}
+      GIT_SHALLOW ${BUILD_LIBZIP_GIT_SHALLOW}
+      GIT_TAG ${BUILD_LIBZIP_VERSION}
+      PREFIX "${CMAKE_BINARY_DIR}/external_projects"
+      DEPENDS ZLIB::libz
+      UPDATE_COMMAND ""
+      CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
+      CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR> -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_TRY_COMPILE_CONFIGURATION=Debug -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_BZIP2=OFF -DENABLE_LZMA=OFF -DENABLE_ZSTD=OFF -DENABLE_OPENSSL=OFF -DENABLE_WINDOWS_CRYPTO=OFF -DENABLE_COMMONCRYPTO=OFF -DENABLE_GNUTLS=OFF -DENABLE_MBEDTLS=OFF -DENABLE_FDOPEN=OFF -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_OSSFUZZ=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOC=OFF -DBUILD_SHARED_LIBS=OFF)
+    add_library(libzip::zip STATIC IMPORTED)
+
+    add_dependencies(libzip::zip libzip-external)
+    set_target_properties(libzip::zip PROPERTIES
+      IMPORTED_LOCATION "${CMAKE_BINARY_DIR}/external_projects/lib/${CMAKE_STATIC_LIBRARY_PREFIX}zip${CMAKE_STATIC_LIBRARY_SUFFIX}"
+      INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/include")
+  else()
+    find_package(libzip REQUIRED)
+    #add_library(LIBZIP::libzip INTERFACE IMPORTED)
+    #set_target_properties(LIBZIP::libzip PROPERTIES
+    #  INTERFACE_INCLUDE_DIRECTORIES "${LIBZIP_INCLUDE_DIRS}"
+    #  INTERFACE_LINK_LIBRARIES "${LIBZIP_LIBRARIES}")
+  endif()
+endif()
+add_feature_info(libzip-interface WITH_LIBZIP "Interface to the libzip.")
+
+if(WITH_GHC_FILESYSTEM)
+  if(WITH_BUILD_GHC_FILESYSTEM)
+    ExternalProject_Add(ghc-external
+        GIT_REPOSITORY ${BUILD_GHC_FILESYSTEM_GIT_REPO}
+        GIT_SHALLOW ${BUILD_GHC_FILESYSTEM_GIT_SHALLOW}
+        GIT_TAG ${BUILD_GHC_FILESYSTEM_VERSION}
+        PREFIX "${CMAKE_BINARY_DIR}/external_projects"
+        UPDATE_COMMAND ""
+        CMAKE_COMMAND "${EXTERNAL_CMAKE_COMMAND}"
+        CMAKE_ARGS -DGHC_FILESYSTEM_BUILD_TESTING=OFF -DGHC_FILESYSTEM_BUILD_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>)
+    add_library(ghcFilesystem::ghc_filesystem INTERFACE IMPORTED)
+    add_dependencies(ghcFilesystem::ghc_filesystem ghc-external)
+    set_target_properties(ghcFilesystem::ghc_filesystem PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/external_projects/include"
+    )
+  else()
+    find_package(ghcFilesystem REQUIRED)
+  endif()
+endif()
+add_feature_info(ghc-filesystem-interface WITH_GHC_FILESYSTEM "Interface to the ghc.")
 
 if(WITH_SELFCONTAINED)
   # Loop over prescribed folders
@@ -1834,9 +2170,9 @@ feature_summary(WHAT ENABLED_FEATURES VAR feature_list)
 string(REPLACE "\n" "\\n" feature_list "${feature_list}")
 
 get_directory_property( compiler_definitions COMPILE_DEFINITIONS )
-set(EXTRA_CXX_FLAGS_FROM_DEFS "")
+set(EXTRA_CXX_FLAGS_FROM_DEFS_LIST "")
 foreach(DEF ${compiler_definitions})
-  set(EXTRA_CXX_FLAGS_FROM_DEFS "${EXTRA_CXX_FLAGS_FROM_DEFS} -D${DEF}")
+  list(APPEND EXTRA_CXX_FLAGS_FROM_DEFS_LIST "-D${DEF}")
 endforeach()
 
 #####################################################
@@ -1919,7 +2255,7 @@ install(FILES
 
 # Install the export set for use with the install-tree
 file(RELATIVE_PATH REL_CMAKE_PREFIX "${CMAKE_INSTALL_PREFIX}" "${CMAKE_PREFIX}")
-install(EXPORT casadi-targets DESTINATION ${REL_CMAKE_PREFIX})
+install(EXPORT casadi-targets NAMESPACE casadi:: DESTINATION ${REL_CMAKE_PREFIX})
 
 set(CPACK_PACKAGE_CONTACT "casadi-users@googlegroups.com")
 set(CPACK_PACKAGE_VERSION ${PACKAGE_VERSION_FULL})

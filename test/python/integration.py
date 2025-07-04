@@ -83,6 +83,8 @@ class Integrationtests(casadiTestCase):
     opts["fsens_err_con"] = True
     #opts["verbose"] = True
     integrator = casadi.integrator("integrator", "cvodes", dae, 0, 2.3, opts)
+    with self.assertInException("No stats available"):
+        integrator.stats()
     tf = 2.3
 
     solution = Function("solution", {'x0':q, 'p':p, 'xf':q*exp(tf**3/(3*p))},
@@ -1417,7 +1419,7 @@ class Integrationtests(casadiTestCase):
         assert meta["index"]==index
         if init_strength is not None:
           [dae_se, state_to_orig, phi] = dae_map_semi_expl(dae, dae_reduced)
-          intg = integrator("intg","idas",dae_se,{"grid": grid})
+          intg = integrator("intg","idas",dae_se,0, grid)
           init_gen = dae_init_gen(dae, dae_reduced, "ipopt", init_strength, {"error_on_fail" : True})
           xz0 = init_gen(**init)
           sol = intg(**xz0)
@@ -1430,5 +1432,78 @@ class Integrationtests(casadiTestCase):
           print("rms error", rms)
           self.assertTrue(np.all(rms<=max_rms))
 
+  def test_IDACalcIC_u(self):
+    x = MX.sym("x")
+    u = MX.sym("u")
+    z = MX.sym("z")
+
+    ivp = {}
+    ivp["x"] = x
+    ivp["z"] = z
+    ivp["u"] = u
+    ivp["ode"] = z
+    ivp["alg"] = sqrt(u)-z
+
+    intg = integrator("intg","idas",ivp,0,1)
+
+    res = intg(x0=0,u=1)
+    self.assertAlmostEqual(res["xf"],1,5,"test_IDACalcIC_u")
+
+  @requires_integrator("cvodes")
+  def test_expand(self):
+    t=MX.sym("t")
+    q=MX.sym("q")
+    p=MX.sym("p")
+
+    dae = {'t':t, 'x':q, 'p':p, 'ode':q/p*t**2}
+    integrator = casadi.integrator("integrator", "cvodes", dae, 0, 2.3, {"expand":True})
+    
+    self.assertTrue(integrator.get_function('jacF').is_a("SXFunction"))
+    
+    t=MX.sym("t")
+    q=MX.sym("q")
+    p=MX.sym("p")
+
+    dae = {'t':t, 'x':q, 'p':p, 'ode':q/p*t**2}
+    integrator = casadi.integrator("integrator", "cvodes", dae, 0, 2.3, {"expand":False})
+    
+    self.assertTrue(integrator.get_function('jacF').is_a("MXFunction"))
+    
+  @requires_integrator("cvodes")
+  def test_postpone_expand(self):
+    x = MX.sym("x")
+    p = MX.sym("p")
+    
+    J = Function("jac_f", [x, MX(1,1)], [-x], ['x', 'out_r'], ['jac_r_x'],{"always_inline":True})
+    f = Function('f', [x], [x**2], ['x'], ['r'], dict(custom_jacobian = J, jac_penalty = 0))
+    
+    dae = {'x':x, 'ode':f(x-2)}
+    
+    integrator = casadi.integrator("integrator", "cvodes", dae, 0, 0.1, {"expand":False})
+    
+    integrator(x0=1)
+    self.assertTrue(integrator.get_function('jacF').is_a("MXFunction"))
+    self.checkarray(integrator.get_function('jacF')(x=1)["jac_ode_x"],1)
+    
+    dae = {'x':x, 'ode':f(x-2)}
+    
+    integrator = casadi.integrator("integrator", "cvodes", dae, 0, 0.1, {"expand":True})
+    integrator(x0=1)
+    self.assertTrue(integrator.get_function('jacF').is_a("SXFunction"))
+    self.checkarray(integrator.get_function('jacF')(x=1)["jac_ode_x"],-2)
+    
+    integrator = casadi.integrator("integrator", "cvodes", dae, 0, 0.1, {"expand":False, "postpone_expand":True})
+    
+    integrator(x0=1)
+    self.assertTrue(integrator.get_function('jacF').is_a("MXFunction"))
+    self.checkarray(integrator.get_function('jacF')(x=1)["jac_ode_x"],1)
+    
+    dae = {'x':x, 'ode':f(x-2)}
+    
+    integrator = casadi.integrator("integrator", "cvodes", dae, 0, 0.1, {"expand":True, "postpone_expand":True})
+    integrator(x0=1)
+    self.assertTrue(integrator.get_function('jacF').is_a("SXFunction"))
+    self.checkarray(integrator.get_function('jacF')(x=1)["jac_ode_x"],1) 
+       
 if __name__ == '__main__':
     unittest.main()

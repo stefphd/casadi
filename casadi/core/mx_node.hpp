@@ -27,13 +27,14 @@
 #define CASADI_MX_NODE_HPP
 
 #include "mx.hpp"
-#include "shared_object_internal.hpp"
+#include "shared_object.hpp"
 #include "sx_elem.hpp"
 #include "calculus.hpp"
 #include "code_generator.hpp"
 #include "linsol.hpp"
 #include <vector>
 #include <stack>
+#include <array>
 
 namespace casadi {
 
@@ -140,7 +141,16 @@ namespace casadi {
         \identifier{1qs} */
     virtual void generate(CodeGenerator& g,
                           const std::vector<casadi_int>& arg,
-                          const std::vector<casadi_int>& res) const;
+                          const std::vector<casadi_int>& res,
+                          const std::vector<bool>& arg_is_ref,
+                          std::vector<bool>& res_is_ref) const;
+
+    void generate_copy(CodeGenerator& g,
+                          const std::vector<casadi_int>& arg,
+                          const std::vector<casadi_int>& res,
+                          const std::vector<bool>& arg_is_ref,
+                          std::vector<bool>& res_is_ref,
+                          casadi_int i) const;
 
     /** \brief  Evaluate numerically
 
@@ -156,6 +166,27 @@ namespace casadi {
 
         \identifier{1qv} */
     virtual void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const;
+
+    /** \brief Evaluate the MX node on a const/linear/nonlinear partition
+
+        \identifier{28b} */
+    virtual void eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const;
+
+    /** \brief Evaluate the MX node on a const/linear/nonlinear partition
+
+        \identifier{28c} */
+    void eval_linear_unary(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const;
+
+    /** \brief Evaluate the MX node on a const/linear/nonlinear partition
+     * 
+     * Default implementation for operations that do not modify numerical values,
+     * but only rearrange them.
+
+        \identifier{2cj} */
+    void eval_linear_rearrange(const std::vector<std::array<MX, 3> >& arg,
+        std::vector<std::array<MX, 3> >& res) const;
 
     /** \brief Calculate forward mode directional derivatives
 
@@ -209,22 +240,38 @@ namespace casadi {
         \identifier{1r5} */
     virtual void primitives(std::vector<MX>::iterator& it) const;
 
+    /// @{
     /** \brief Split up an expression along symbolic primitives
 
         \identifier{1r6} */
     virtual void split_primitives(const MX& x, std::vector<MX>::iterator& it) const;
+    virtual void split_primitives(const SX& x, std::vector<SX>::iterator& it) const;
+    virtual void split_primitives(const DM& x, std::vector<DM>::iterator& it) const;
+    /// @}
 
+    /// Join an expression along symbolic primitives (template)
+    template<typename T>
+    T join_primitives_gen(typename std::vector<T>::const_iterator& it) const;
+
+    /// @{
     /** \brief Join an expression along symbolic primitives
 
         \identifier{1r7} */
     virtual MX join_primitives(std::vector<MX>::const_iterator& it) const;
+    virtual SX join_primitives(std::vector<SX>::const_iterator& it) const;
+    virtual DM join_primitives(std::vector<DM>::const_iterator& it) const;
+    /// @}
 
     /** \brief Detect duplicate symbolic expressions
+
+    Not thread-safe
 
         \identifier{1r8} */
     virtual bool has_duplicates() const;
 
     /** \brief Reset the marker for an input expression
+
+    Not thread-safe
 
         \identifier{1r9} */
     virtual void reset_input() const;
@@ -387,6 +434,9 @@ namespace casadi {
 
     /// Set multiple dependencies
     void set_dep(const std::vector<MX>& dep);
+
+    /// Check validatity of dependencies
+    void check_dep() const;
 
     /// Convert scalar to matrix
     inline static MX to_matrix(const MX& x, const Sparsity& sp) {

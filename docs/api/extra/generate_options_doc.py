@@ -66,9 +66,7 @@ metadata=dict()
 for c in classes:
   refid = c.attrib['refid']
   name=c.findtext("name")
-  
-  constructor_name = name + "::" + name.split("::")[-1]
-  
+
   # Parse the XML file that describes the class
   f = etree.parse(xml+refid+'.xml')
   
@@ -93,7 +91,7 @@ for c in classes:
     meta['hasInternal']=temp.attrib["refid"]
   
   # find the file location of this class
-  temp = f.find("//memberdef[definition='%s']/location" % constructor_name)
+  temp = f.find("compounddef/location")
   if not(temp is None):
     meta['file']=temp.attrib["file"]
     
@@ -332,7 +330,7 @@ filemap = {}
 for name,meta in sorted(metadata.items()):
   if "casadi::PluginInterface" in meta["hierarchy"] and 'casadi::FunctionInternal' not in meta["parents"]: 
     m = re.search("'(\w+)' plugin for (\w+)",meta["brief"])
-    if m:
+    if m and "file" in meta:
       filemap["plugin_%s_%s" % ( m.group(2),m.group(1))] = (meta["file"],name)
 
 import pickle

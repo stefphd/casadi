@@ -40,6 +40,20 @@ namespace casadi {
     res[0] = arg[0]->get_dot(arg[1]);
   }
 
+  void Dot::eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const {
+    const std::array<MX, 3>& x = arg[0];
+    const std::array<MX, 3>& y = arg[1];
+    std::array<MX, 3>& f = res[0];
+    MX x12 = x[1]+x[2];
+    f[0] += dot(x[0], y[0]);
+    f[1] += dot(x[0], y[1]);
+    f[1] += dot(x[1], y[0]);
+    f[2] += dot(x[0], y[2]);
+    f[2] += dot(x[1]+x[2], y[1]+y[2]);
+    f[2] += dot(x[2], y[0]);
+  }
+
   void Dot::ad_forward(const std::vector<std::vector<MX> >& fseed,
                           std::vector<std::vector<MX> >& fsens) const {
     for (casadi_int d=0; d<fsens.size(); ++d) {
@@ -94,9 +108,13 @@ namespace casadi {
 
   void Dot::generate(CodeGenerator& g,
                       const std::vector<casadi_int>& arg,
-                      const std::vector<casadi_int>& res) const {
+                      const std::vector<casadi_int>& res,
+                      const std::vector<bool>& arg_is_ref,
+                      std::vector<bool>& res_is_ref) const {
     g << g.workel(res[0]) << " = "
-      << g.dot(dep().nnz(), g.work(arg[0], dep(0).nnz()), g.work(arg[1], dep(1).nnz()))
+      << g.dot(dep().nnz(),
+                g.work(arg[0], dep(0).nnz(), arg_is_ref[0]),
+                g.work(arg[1], dep(1).nnz(), arg_is_ref[1]))
       << ";\n";
   }
 

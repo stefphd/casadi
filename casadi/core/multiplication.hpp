@@ -61,7 +61,9 @@ namespace casadi {
         \identifier{11l} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /// Evaluate the function (template)
     template<typename T>
@@ -77,6 +79,12 @@ namespace casadi {
 
         \identifier{11m} */
     void eval_mx(const std::vector<MX>& arg, std::vector<MX>& res) const override;
+
+    /** \brief Evaluate the MX node on a const/linear/nonlinear partition
+
+        \identifier{28a} */
+    void eval_linear(const std::vector<std::array<MX, 3> >& arg,
+                        std::vector<std::array<MX, 3> >& res) const override;
 
     /** \brief Calculate forward mode directional derivatives
 
@@ -164,7 +172,9 @@ namespace casadi {
         \identifier{120} */
     void generate(CodeGenerator& g,
                   const std::vector<casadi_int>& arg,
-                  const std::vector<casadi_int>& res) const override;
+                  const std::vector<casadi_int>& res,
+                  const std::vector<bool>& arg_is_ref,
+                  std::vector<bool>& res_is_ref) const override;
 
     /** \brief Serialize specific part of node
 

@@ -6,6 +6,6 @@ ENV CXX=g++-7
 ENV CC=gcc-7
 
 RUN git clone https://github.com/jaeandersson/swig.git && \
-    cd swig && git checkout matlab-customdoc && ./autogen.sh && ./configure && make && make install
+    cd swig && git checkout 49ac0e613 && ./autogen.sh && ./configure && make && make install && ./configure --prefix=/opt/swig && make && make install
 
 WORKDIR /local

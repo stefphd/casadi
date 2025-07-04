@@ -44,6 +44,16 @@ namespace casadi {
         \identifier{6j} */
     static std::vector<MX> create(const Function& fcn, const std::vector<MX>& arg);
 
+    /** \brief  Create function call node
+
+        \identifier{287} */
+    static MX create_call(const Function& fcn, const std::vector<MX>& arg);
+
+    /** \brief  Get an output
+
+        \identifier{2bt} */
+    MX get_output(casadi_int oind) const override;
+
     /** \brief  Destructor
 
         \identifier{6k} */
@@ -84,7 +94,9 @@ namespace casadi {
         \identifier{6r} */
     void generate(CodeGenerator& g,
                           const std::vector<casadi_int>& arg,
-                          const std::vector<casadi_int>& res) const override;
+                          const std::vector<casadi_int>& res,
+                          const std::vector<bool>& arg_is_ref,
+                          std::vector<bool>& res_is_ref) const override;
 
     /// Evaluate the function numerically
     int eval(const double** arg, double** res, casadi_int* iw, double* w) const override;
@@ -192,6 +204,9 @@ namespace casadi {
 
     // Function to be evaluated
     Function fcn_;
+
+    /// Output node cache
+    mutable WeakCache<casadi_int, MX> cache_;
   };
 
 } // namespace casadi

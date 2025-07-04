@@ -194,8 +194,8 @@ class Doxy2SWIG_X(Doxy2SWIG):
       self.multi = 1
       comps = node.getElementsByTagName('compound')
       for c in comps:
-          refid = c.attributes['refid'].value          
-          if c.attributes['kind'].value in ["example","struct","group","source","dir","file"]: continue
+          refid = c.attributes['refid'].value
+          if c.attributes['kind'].value in ["example","struct","source","dir","file"]: continue
           filters = ["internal","interface","node"]
           filtered = False          
           for f in filters:
@@ -421,7 +421,7 @@ class Doxy2SWIG_X(Doxy2SWIG):
       Doxy2SWIG.generate(self)
       for k, v in self.docstringmap.items():
         if k.startswith("plugin_"):
-          groupdoc[k] = v[0][1]
+          self.groupdoc[k] = v[0][1]
           break
         # Group together
         grouped_list = []
@@ -464,9 +464,9 @@ class Doxy2SWIG_X(Doxy2SWIG):
             
           if meta is not None:
               if len("".join(pieces).strip())>0:
-                  pieces = pieces+["Doc source: https://github.com/casadi/casadi/blob/develop%s#L%d\n" % (meta["decl"]["file"].replace(stem,""),meta["decl"]["line"])]
+                  pieces = pieces+["Doc source: https://github.com/casadi/casadi/blob/main%s#L%d\n" % (meta["decl"]["file"].replace(stem,""),meta["decl"]["line"])]
                   if "impl" in meta:
-                      pieces = pieces+["Implementation: https://github.com/casadi/casadi/blob/develop%s#L%d-L%d\n" % (meta["impl"]["file"].replace(stem,""),meta["impl"]["lines"][0],meta["impl"]["lines"][1])]
+                      pieces = pieces+["Implementation: https://github.com/casadi/casadi/blob/main%s#L%d-L%d\n" % (meta["impl"]["file"].replace(stem,""),meta["impl"]["lines"][0],meta["impl"]["lines"][1])]
             
           #"INTERNAL": "mark_internal(\"$decl\");"
           #"DEPRECATED": "deprecated(\"%s\");"

@@ -77,15 +77,15 @@ namespace casadi {
 
         \identifier{1oa} */
     Sparsity get_sparsity_in(casadi_int i) override { return oracle_.sparsity_in(i);}
-    Sparsity get_sparsity_out(casadi_int i) override { return oracle_.sparsity_out(i);}
+    Sparsity get_sparsity_out(casadi_int i) override;
     /// @}
 
     ///@{
     /** \brief Names of function input and outputs
 
         \identifier{1ob} */
-    std::string get_name_in(casadi_int i) override { return oracle_.name_in(i);}
-    std::string get_name_out(casadi_int i) override { return oracle_.name_out(i);}
+    std::string get_name_in(casadi_int i) override;
+    std::string get_name_out(casadi_int i) override;
     /// @}
 
     ///@{
@@ -200,6 +200,10 @@ namespace casadi {
 
     /// Collection of solvers
     static std::map<std::string, Plugin> solvers_;
+
+#ifdef CASADI_WITH_THREADSAFE_SYMBOLICS
+    static std::mutex mutex_solvers_;
+#endif // CASADI_WITH_THREADSAFE_SYMBOLICS
 
     /// Short name
     static std::string shortname() { return "rootfinder";}

@@ -240,8 +240,8 @@ namespace casadi {
     // Initial guess
     alpaqa::DefaultConfig::vec x(nx_);
     alpaqa::DefaultConfig::vec y(ng_);
-    casadi_copy(d_nlp->x0, nx_, x.data());
-    casadi_copy(d_nlp->lam_g0, ng_, y.data());
+    casadi_copy(d_nlp->z, nx_, x.data());
+    casadi_copy(d_nlp->lam+nx_, ng_, y.data());
 
     // Solve the problem
     auto stats = solver(counted_problem, x, y);
@@ -256,7 +256,6 @@ namespace casadi {
 
     if (stats.status == alpaqa::SolverStatus::Converged) {
       m->success = true;
-      m->unified_return_status = SOLVER_RET_SUCCESS;
     } else if (stats.status == alpaqa::SolverStatus::MaxTime || stats.status == alpaqa::SolverStatus::MaxIter) {
       m->unified_return_status = SOLVER_RET_LIMITED;
     } else if (stats.status == alpaqa::SolverStatus::NotFinite) {
